@@ -21,9 +21,9 @@ def test_submodules_importable() -> None:
 def test_entry_points_registered() -> None:
     """protea.sources entry_points group must list all 3 sub-modules.
 
-    Plugin objects themselves are still placeholders (None) until F2A.6;
-    here we only assert that the entry_points discovery works so
-    protea-core can rely on it.
+    Each plugin is a real ``AnnotationSource`` subclass post-F2A.6; the
+    per-plugin test files (``test_goa.py`` etc.) cover ABC compliance
+    and contract-stub semantics.
     """
     eps = entry_points(group="protea.sources")
     names = {ep.name for ep in eps}

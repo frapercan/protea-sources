@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.13"
+python = ">=3.12,<4.0"
 "protea-contracts" = { path = "../protea-contracts", develop = true }
 requests = ">=2.31"
 

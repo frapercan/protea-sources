@@ -30,6 +30,7 @@ pytest = ">=7"
 pytest-cov = ">=4"
 ruff = ">=0.1"
 mypy = ">=1.7"
+types-requests = ">=2.31"
 
 # Plugin discovery: protea-core resolves AnnotationSource implementations
 # via entry_points on this group. Adding a new source = a new sub-module

@@ -47,9 +47,9 @@ def test_plugin_resolvable_via_entry_points() -> None:
     assert resolved is plugin
 
 
-def test_load_is_deprecated_pending_d_migr_06() -> None:
-    with pytest.raises(NotImplementedError, match=r"deprecated"):
-        plugin.load(session=None, payload={}, emit=lambda *a, **k: None)
+# NOTE: ``load()`` was removed from the ABC in D-MIGR-06 (turn 37).
+# The previous deprecation test no longer applies — callers use
+# ``GoaSource.stream`` directly.
 
 
 # -- Parser tests ---------------------------------------------------------

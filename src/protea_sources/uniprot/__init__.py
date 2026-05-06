@@ -338,7 +338,7 @@ class UniProtSource(AnnotationSource):
         """
         return self._client.requests, self._client.retries
 
-    # -- Deprecated ABC methods ------------------------------------------
+    # -- Generic stream redirect ----------------------------------------
 
     def stream(
         self,
@@ -346,31 +346,19 @@ class UniProtSource(AnnotationSource):
         *,
         emit: Any,
     ) -> Iterator[UniProtProteinRecord]:
-        """Removed: this source has no single ``stream`` modality.
+        """No single ``stream`` modality on this source.
 
         UniProt has two modalities — FASTA via :meth:`stream_fasta`,
-        metadata via :meth:`stream_metadata`. Callers must dispatch to
-        the specific method.
+        metadata via :meth:`stream_metadata`. The redirect is kept (vs
+        leaving the method absent) so callers that probe ``stream`` get
+        a clear pointer to the specific method instead of an
+        AttributeError. Other AnnotationSource plugins (goa, quickgo)
+        do have a single ``stream`` method.
         """
         raise NotImplementedError(
             "UniProtSource.stream is not implemented; use "
             "stream_fasta(payload) for FASTA records or "
             "stream_metadata(payload) for TSV metadata."
-        )
-
-    def load(
-        self,
-        session: Any,
-        payload: dict[str, Any],
-        *,
-        emit: Any,
-    ) -> dict[str, Any]:
-        """Deprecated. Use :meth:`stream_fasta`. Removal pending D-MIGR-06."""
-        raise NotImplementedError(
-            "UniProtSource.load is deprecated; use "
-            "UniProtSource.stream_fasta(payload) and own the session "
-            "in the calling operation. ABC removal of load() is "
-            "scheduled for D-MIGR-06 of master plan v3."
         )
 
 

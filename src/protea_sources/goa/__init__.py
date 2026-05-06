@@ -145,25 +145,6 @@ class GoaSource(AnnotationSource):
 
         emit("source.goa.download_done", None, {"gaf_url": payload.gaf_url}, "info")
 
-    # ``AnnotationSource.load`` is still abstract on the ABC, so this
-    # override is required to instantiate ``GoaSource``. The method is
-    # deprecated; consumers should call :meth:`stream` and own the
-    # session in their calling operation. ABC removal lands in
-    # D-MIGR-06 of the F2A.6-real plan.
-    def load(
-        self,
-        session: Any,
-        payload: dict[str, Any],
-        *,
-        emit: Any,
-    ) -> dict[str, Any]:
-        """Deprecated. Use :meth:`stream` instead. Removal pending D-MIGR-06."""
-        raise NotImplementedError(
-            "GoaSource.load is deprecated; use GoaSource.stream(payload) "
-            "and own the session in the calling operation. ABC removal "
-            "of load() is scheduled for D-MIGR-06 of master plan v3."
-        )
-
 
 #: Module-level plugin instance discovered via the
 #: ``protea.sources`` entry_points group.

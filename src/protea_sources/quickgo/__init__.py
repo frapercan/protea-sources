@@ -248,25 +248,6 @@ class QuickGoSource(AnnotationSource):
         )
         return mapping
 
-    # ``AnnotationSource.load`` is still abstract on the ABC; this
-    # override is required to instantiate. Deprecated; consumers should
-    # call :meth:`stream` and (optionally) :meth:`fetch_eco_mapping`.
-    # ABC removal lands in D-MIGR-06 of the F2A.6-real plan.
-    def load(
-        self,
-        session: Any,
-        payload: dict[str, Any],
-        *,
-        emit: Any,
-    ) -> dict[str, Any]:
-        """Deprecated. Use :meth:`stream` instead. Removal pending D-MIGR-06."""
-        raise NotImplementedError(
-            "QuickGoSource.load is deprecated; use "
-            "QuickGoSource.stream(payload) and own the session in the "
-            "calling operation. ABC removal of load() is scheduled for "
-            "D-MIGR-06 of master plan v3."
-        )
-
 
 #: Module-level plugin instance discovered via the
 #: ``protea.sources`` entry_points group.

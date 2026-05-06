@@ -24,11 +24,26 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Any
+from typing import Any, Protocol
 
 import requests
-from protea_contracts import UniProtFastaStreamPayload
 from requests import Response
+
+
+class _RetryKnobs(Protocol):
+    """Structural type for any payload that carries retry/backoff knobs.
+
+    Both :class:`protea_contracts.UniProtFastaStreamPayload` and
+    :class:`protea_contracts.UniProtMetadataStreamPayload` satisfy this
+    Protocol, so the same client can drive either modality.
+    """
+
+    user_agent: str
+    timeout_seconds: int
+    max_retries: int
+    backoff_base_seconds: float
+    backoff_max_seconds: float
+    jitter_seconds: float
 
 
 class UniProtRetryClient:
@@ -51,7 +66,7 @@ class UniProtRetryClient:
     def get_with_retries(
         self,
         url: str,
-        payload: UniProtFastaStreamPayload,
+        payload: _RetryKnobs,
         emit: Any,
     ) -> Response:
         """GET with retry/backoff on 429, 5xx, and network errors.
@@ -112,7 +127,7 @@ class UniProtRetryClient:
 
     def _sleep_backoff(
         self,
-        payload: UniProtFastaStreamPayload,
+        payload: _RetryKnobs,
         attempt: int,
         emit: Any,
         reason: str,

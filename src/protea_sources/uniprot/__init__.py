@@ -24,16 +24,19 @@ The plugin currently exposes:
 
 from __future__ import annotations
 
+import csv
 import gzip
 import re
 from collections.abc import Iterator
-from io import BytesIO
+from io import BytesIO, StringIO
 from typing import Any
 from urllib.parse import quote
 
 from protea_contracts import (
     AnnotationSource,
     UniProtFastaStreamPayload,
+    UniProtMetadataRecord,
+    UniProtMetadataStreamPayload,
     UniProtProteinRecord,
     compute_sequence_hash,
     parse_isoform,
@@ -172,6 +175,42 @@ def _build_search_url(payload: UniProtFastaStreamPayload, cursor: str | None) ->
     return base if not cursor else f"{base}&cursor={cursor}"
 
 
+def _build_metadata_url(
+    payload: UniProtMetadataStreamPayload, cursor: str | None
+) -> str:
+    encoded_query = quote(payload.search_criteria)
+    params = [
+        "format=tsv",
+        f"query={encoded_query}",
+        f"size={payload.page_size}",
+        "compressed=true" if payload.compressed else "compressed=false",
+        f"fields={quote(','.join(payload.fields))}",
+    ]
+    base = f"{payload.base_url}?{'&'.join(params)}"
+    return base if not cursor else f"{base}&cursor={cursor}"
+
+
+def parse_metadata_tsv(tsv_text: str) -> Iterator[UniProtMetadataRecord]:
+    """Parse a UniProt TSV string into a record iterator.
+
+    Uses :class:`csv.DictReader` so column-name → cell mapping handles
+    quoted fields and commas correctly. Empty cells are normalised to
+    ``""`` (never ``None``) so the operation can safely apply
+    ``.strip()`` without optional-handling. Rows missing the
+    ``Entry`` column are skipped silently.
+    """
+    reader = csv.DictReader(StringIO(tsv_text), delimiter="\t")
+    for row in reader:
+        normalised = {k: (v if v is not None else "") for k, v in row.items()}
+        accession = normalised.get("Entry", "").strip()
+        if not accession:
+            continue
+        yield UniProtMetadataRecord(
+            accession=accession,
+            raw_fields=normalised,
+        )
+
+
 class UniProtSource(AnnotationSource):
     """UniProt REST source (FASTA paginated + metadata TSV)."""
 
@@ -236,6 +275,59 @@ class UniProtSource(AnnotationSource):
             if not next_cursor:
                 break
 
+    def stream_metadata(
+        self,
+        payload: UniProtMetadataStreamPayload,
+        *,
+        emit: Any,
+    ) -> Iterator[UniProtMetadataRecord]:
+        """Yield :class:`UniProtMetadataRecord` instances from UniProt TSV.
+
+        Cursor pagination identical to :meth:`stream_fasta`; the only
+        differences are ``format=tsv``, the ``fields=...`` query param
+        carrying the requested column list, and gzip compression
+        defaulting to ``True`` (TSV responses are large).
+
+        HTTP counters share the same client as ``stream_fasta``, so a
+        run that interleaves both calls accumulates into the same
+        ``http_counters`` tuple — the operation should call
+        ``self._client.reset()`` (or accept the running totals) per
+        execution as appropriate.
+        """
+        self._client.reset()
+        emit(
+            "source.uniprot_metadata.start",
+            None,
+            {"search_criteria": payload.search_criteria, "page_size": payload.page_size},
+            "info",
+        )
+
+        next_cursor: str | None = None
+        page = 0
+        while True:
+            page += 1
+            url = _build_metadata_url(payload, next_cursor)
+            emit(
+                "source.uniprot_metadata.fetch_page_start",
+                None,
+                {"page": page, "has_cursor": bool(next_cursor)},
+                "info",
+            )
+            resp = self._client.get_with_retries(url, payload, emit)
+            text = _decode_response_body(resp.content, payload.compressed)
+            page_records = list(parse_metadata_tsv(text))
+            emit(
+                "source.uniprot_metadata.fetch_page_done",
+                None,
+                {"page": page, "rows": len(page_records)},
+                "info",
+            )
+            yield from page_records
+
+            next_cursor = extract_next_cursor(resp.headers.get("link", ""))
+            if not next_cursor:
+                break
+
     @property
     def http_counters(self) -> tuple[int, int]:
         """Return ``(requests, retries)`` for the most recent stream run.
@@ -256,14 +348,14 @@ class UniProtSource(AnnotationSource):
     ) -> Iterator[UniProtProteinRecord]:
         """Removed: this source has no single ``stream`` modality.
 
-        UniProt has two modalities (FASTA via :meth:`stream_fasta`,
-        metadata via :meth:`fetch_metadata` once F2A.6-real step 4
-        lands). Callers must dispatch to the specific method.
+        UniProt has two modalities — FASTA via :meth:`stream_fasta`,
+        metadata via :meth:`stream_metadata`. Callers must dispatch to
+        the specific method.
         """
         raise NotImplementedError(
             "UniProtSource.stream is not implemented; use "
             "stream_fasta(payload) for FASTA records or "
-            "fetch_metadata(payload) (pending step 4) for TSV metadata."
+            "stream_metadata(payload) for TSV metadata."
         )
 
     def load(

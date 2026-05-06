@@ -26,6 +26,8 @@ import pytest
 from protea_contracts import (
     AnnotationSource,
     UniProtFastaStreamPayload,
+    UniProtMetadataRecord,
+    UniProtMetadataStreamPayload,
     UniProtProteinRecord,
 )
 
@@ -33,6 +35,7 @@ from protea_sources.uniprot import (
     UniProtSource,
     parse_fasta_header,
     parse_fasta_text,
+    parse_metadata_tsv,
     plugin,
 )
 from protea_sources.uniprot._http import UniProtRetryClient, extract_next_cursor
@@ -65,8 +68,8 @@ def test_load_is_deprecated_pending_d_migr_06() -> None:
         plugin.load(session=None, payload={}, emit=lambda *a, **k: None)
 
 
-def test_stream_redirects_to_stream_fasta() -> None:
-    with pytest.raises(NotImplementedError, match=r"stream_fasta"):
+def test_stream_redirects_to_specific_methods() -> None:
+    with pytest.raises(NotImplementedError, match=r"stream_metadata"):
         list(plugin.stream({}, emit=lambda *a, **k: None))
 
 
@@ -412,3 +415,159 @@ class TestStreamFastaWiring:
         ):
             list(plugin_instance.stream_fasta(self._payload(), emit=emit))
         assert plugin_instance.http_counters == (1, 0)
+
+
+# -- Metadata parser + stream tests ---------------------------------------
+
+
+_TSV_HEADER = (
+    "Entry\tReviewed\tEntry Name\tProtein names\tGene Names\tOrganism\t"
+    "Length\tActive site\tEC number\tFunction [CC]\tKeywords"
+)
+_TSV_ROW_REVIEWED = (
+    "P12345\treviewed\tFOO_HUMAN\tFoo protein\tFOO\tHomo sapiens\t"
+    "350\tACT_SITE 100\t1.1.1.1\tCatalytic role.\tEnzyme;Hydrolase"
+)
+_TSV_ROW_UNREVIEWED = (
+    "Q67890\tunreviewed\tQ67890_MOUSE\tPutative bar\tBar\tMus musculus\t"
+    "210\t\t\t\t"
+)
+
+
+class TestParseMetadataTsv:
+    def test_two_rows_yield_two_records(self) -> None:
+        text = "\n".join([_TSV_HEADER, _TSV_ROW_REVIEWED, _TSV_ROW_UNREVIEWED])
+        records = list(parse_metadata_tsv(text))
+        assert len(records) == 2
+        assert records[0].accession == "P12345"
+        assert records[0].raw_fields["Active site"] == "ACT_SITE 100"
+        assert records[1].accession == "Q67890"
+        assert records[1].raw_fields["Active site"] == ""
+
+    def test_empty_entry_row_skipped(self) -> None:
+        text = "\n".join([
+            _TSV_HEADER,
+            "\treviewed\tNAME\t\t\t\t\t\t\t\t",  # blank Entry
+            _TSV_ROW_REVIEWED,
+        ])
+        records = list(parse_metadata_tsv(text))
+        assert len(records) == 1
+        assert records[0].accession == "P12345"
+
+    def test_header_only_yields_nothing(self) -> None:
+        assert list(parse_metadata_tsv(_TSV_HEADER)) == []
+
+    def test_empty_text_yields_nothing(self) -> None:
+        assert list(parse_metadata_tsv("")) == []
+
+    def test_records_are_uniprot_metadata_record_instances(self) -> None:
+        text = "\n".join([_TSV_HEADER, _TSV_ROW_REVIEWED])
+        records = list(parse_metadata_tsv(text))
+        assert isinstance(records[0], UniProtMetadataRecord)
+
+
+class TestStreamMetadataWiring:
+    def _payload(self, **overrides) -> UniProtMetadataStreamPayload:
+        defaults = {
+            "search_criteria": "reviewed:true",
+            "fields": ["accession", "protein_name"],
+            "max_retries": 2,
+            "backoff_base_seconds": 0.0,
+            "backoff_max_seconds": 0.0,
+            "jitter_seconds": 0.0,
+        }
+        defaults.update(overrides)
+        return UniProtMetadataStreamPayload(**defaults)
+
+    def test_single_page_yields_records(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, _ = _capture_emit()
+        body = ("\n".join([_TSV_HEADER, _TSV_ROW_REVIEWED]) + "\n").encode()
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            return_value=_mock_resp(body),
+        ):
+            records = list(
+                plugin_instance.stream_metadata(self._payload(compressed=False), emit=emit)
+            )
+        assert len(records) == 1
+        assert records[0].accession == "P12345"
+
+    def test_gzip_compressed_response_decompresses(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, _ = _capture_emit()
+        body = gzip.compress(("\n".join([_TSV_HEADER, _TSV_ROW_REVIEWED]) + "\n").encode())
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            return_value=_mock_resp(body),
+        ):
+            records = list(plugin_instance.stream_metadata(self._payload(), emit=emit))
+        assert len(records) == 1
+
+    def test_query_includes_fields_param(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, _ = _capture_emit()
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            return_value=_mock_resp(b""),
+        ) as mock_get:
+            list(plugin_instance.stream_metadata(
+                self._payload(fields=["accession", "ft_act_site"], compressed=False),
+                emit=emit,
+            ))
+        url = mock_get.call_args.args[0]
+        assert "format=tsv" in url
+        assert "fields=accession" in url
+        assert "ft_act_site" in url
+
+    def test_compressed_default_true_in_url(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, _ = _capture_emit()
+        body = gzip.compress(_TSV_HEADER.encode() + b"\n")
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            return_value=_mock_resp(body),
+        ) as mock_get:
+            list(plugin_instance.stream_metadata(self._payload(), emit=emit))
+        url = mock_get.call_args.args[0]
+        assert "compressed=true" in url
+
+    def test_cursor_pagination(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, _ = _capture_emit()
+        body1 = ("\n".join([_TSV_HEADER, _TSV_ROW_REVIEWED]) + "\n").encode()
+        body2 = ("\n".join([_TSV_HEADER, _TSV_ROW_UNREVIEWED]) + "\n").encode()
+        page1 = _mock_resp(
+            body1, link_header='<https://example.com?cursor=PAGE2>; rel="next"'
+        )
+        page2 = _mock_resp(body2, link_header="")
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            side_effect=[page1, page2],
+        ) as mock_get:
+            records = list(
+                plugin_instance.stream_metadata(self._payload(compressed=False), emit=emit)
+            )
+        assert len(records) == 2
+        assert mock_get.call_count == 2
+        assert "cursor=PAGE2" in mock_get.call_args_list[1].args[0]
+
+    def test_progress_events_emitted(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, captured = _capture_emit()
+        body = ("\n".join([_TSV_HEADER, _TSV_ROW_REVIEWED]) + "\n").encode()
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            return_value=_mock_resp(body),
+        ):
+            list(plugin_instance.stream_metadata(self._payload(compressed=False), emit=emit))
+        events = [e for e, *_ in captured]
+        assert "source.uniprot_metadata.start" in events
+        assert "source.uniprot_metadata.fetch_page_start" in events
+        assert "source.uniprot_metadata.fetch_page_done" in events

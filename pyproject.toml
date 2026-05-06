@@ -22,7 +22,7 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = ">=3.12,<4.0"
-"protea-contracts" = { path = "../protea-contracts", develop = true }
+"protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", branch = "master" }
 requests = ">=2.31"
 
 [tool.poetry.group.dev.dependencies]

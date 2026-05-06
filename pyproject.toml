@@ -32,6 +32,15 @@ ruff = ">=0.1"
 mypy = ">=1.7"
 types-requests = ">=2.31"
 
+[tool.poetry.group.docs]
+optional = true
+
+[tool.poetry.group.docs.dependencies]
+sphinx = ">=7.3"
+shibuya = ">=2024.10"
+sphinx-copybutton = ">=0.5"
+sphinx-design = ">=0.5"
+
 # Plugin discovery: protea-core resolves AnnotationSource implementations
 # via entry_points on this group. Adding a new source = a new sub-module
 # here + an entry registered below + protea-core picks it up at startup.

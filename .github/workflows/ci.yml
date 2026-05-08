@@ -12,14 +12,6 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Checkout protea-contracts (path-dep)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/protea-contracts
-          path: ../protea-contracts
-          ref: main
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:

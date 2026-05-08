@@ -92,7 +92,7 @@ class _OffenderVisitor(ast.NodeVisitor):
         self.out: list[Offender] = []
         self._class_stack: list[str] = []
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
         length = _span(node)
         if length > THRESHOLDS["class_loc"]:
             self.out.append(
@@ -121,10 +121,10 @@ class _OffenderVisitor(ast.NodeVisitor):
             )
         self.generic_visit(node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_func(node)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self._visit_func(node)
 
 

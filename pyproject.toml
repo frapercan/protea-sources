@@ -61,6 +61,17 @@ ignore = ["E501"]
 python_version = "3.10"
 strict = true
 warn_unused_ignores = true
+# numpy / pandas generic types add ``Any, Any`` bloat; tighten when
+# the upstream stubs stabilise.
+disallow_any_generics = false
+
+[[tool.mypy.overrides]]
+# Tests use **kwargs unpacking, untyped fixture functions, and tuple
+# literals freely; strict typing on tests adds ceremony without
+# catching real bugs in the source code (which remains strict above).
+# Mirrors PROTEA's per-module ignore for routers / operations.
+module = ["tests.*"]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

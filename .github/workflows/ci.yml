@@ -2,9 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   test:
@@ -32,6 +30,8 @@ jobs:
         run: poetry install --with dev
       - name: Lint (ruff)
         run: poetry run ruff check .
+      - name: Smell budget (master plan v3.2 §3)
+        run: poetry run python scripts/check_smells.py --target src
       - name: Type-check (mypy strict)
         run: poetry run mypy src tests
       - name: Test

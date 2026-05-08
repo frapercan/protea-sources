@@ -1,0 +1,19 @@
+{
+  "thresholds": {
+    "file_loc": 800,
+    "class_loc": 500,
+    "method_loc": 60,
+    "param_count": 6
+  },
+  "offenders": [
+    {
+      "key": "method::src/protea_sources/uniprot/_http.py::UniProtRetryClient.get_with_retries",
+      "kind": "method",
+      "path": "src/protea_sources/uniprot/_http.py",
+      "name": "UniProtRetryClient.get_with_retries",
+      "line": 66,
+      "metric": 61,
+      "threshold": 60
+    }
+  ]
+}

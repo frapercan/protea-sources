@@ -118,6 +118,40 @@ poetry run ruff check .
 poetry run mypy --strict src
 ```
 
+## Contributing
+
+Contributions are welcome from research institutions and individual developers.
+
+**Branch strategy:** all changes target `develop`; `main` tracks stable
+releases only.
+
+```bash
+git clone https://github.com/frapercan/protea-sources.git
+cd protea-sources
+git checkout develop
+git checkout -b feature/my-source
+
+poetry install
+
+# Make your changes, then verify locally:
+poetry run pytest             # ~175 tests, < 1 s
+poetry run ruff check .
+poetry run mypy --strict src
+
+# Open a pull request targeting develop
+```
+
+Key constraints:
+- **Self-contained.** HTTP, parsing, and source-specific retries live
+  here. Persistence (DB writes) stays in the PROTEA operation that
+  calls the plugin. Do not import `sqlalchemy` or `protea-core`.
+- **Records are typed leaves.** Plugin `stream*()` methods must yield
+  pydantic records defined in `protea-contracts.records`. New record
+  shapes belong in `protea-contracts` first (with a coordinated version
+  bump), not in this package.
+- **Testable in isolation.** Parser tests run against canned bytes;
+  HTTP tests use `requests.get` mocks. No DB or network access in CI.
+
 ## Documentation
 
 Full Sphinx documentation in `docs/source/`. Build locally with

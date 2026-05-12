@@ -1,26 +1,40 @@
 """InterProScan ``AnnotationSource`` implementation.
 
-IP.1a keeps the runtime surface deliberately small: the plugin is a
-marker for entry-point discovery and a thin wrapper around the TSV
-parser. IP.1b will add ``run(...)`` (subprocess invocation of
-``interproscan.sh``) and a ``stream`` method that pairs the runner
-with the parser.
+IP.1a delivered the plugin scaffold + the pure-Python TSV parser.
+IP.1b adds the live runner: :meth:`InterProSource.run` invokes
+``interproscan.sh`` via :mod:`subprocess`, captures the stdout TSV,
+threads the ``--version`` tag onto every emitted record, and yields
+parsed :class:`InterProAnnotation` instances.
 
-Why the plugin class exists at all in IP.1a:
+Why the runner stays on the plugin (and not in the operation layer):
 
-* ``protea-core`` discovers sources by iterating the
-  ``protea.sources`` entry-points group and isinstance-checking each
-  ``.load()`` result against :class:`AnnotationSource`. Without a
-  concrete subclass with ``name`` / ``version`` class attributes,
-  the plugin would not show up in the registry.
-* Future ``run`` / ``stream`` methods belong on the same class so the
-  IP.1b PR is a method-add, not a class-rename.
+* ``protea-core`` reaches every source through the
+  ``protea.sources`` entry-points group. Keeping the subprocess
+  invocation here means the operation that loads InterProScan
+  annotations is dispatch-only (it picks the plugin and pipes the
+  records into the ORM); the operation does not need to know about
+  binary paths, ``--version`` parsing, or stdout encoding.
+* The :func:`subprocess.run` call is centralised so the timeout +
+  ``check=True`` posture is uniform: a hang, a non-zero exit, or a
+  missing binary all surface as exceptions that the runner layer
+  already handles per the workflow's retry policy.
+
+Out of scope for IP.1b (kept as docstring breadcrumbs):
+
+* IP.1c: REST-API fallback when the binary is absent and the host
+  has internet access (EBI InterProScan REST).
+* IP.2: ORM model ``interpro_annotation`` in PROTEA core.
+* IP.3: ``run_interproscan_batch`` operation wiring this into the
+  job queue.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import Any
 
 from protea_contracts import AnnotationSource
 
@@ -28,6 +42,131 @@ from protea_sources.interpro.parser import (
     InterProAnnotation,
     parse_interproscan_tsv,
 )
+from protea_sources.interpro.payload import InterProRunPayload
+
+# Environment-variable knob for the binary path. Mirrors the
+# ``PROTEA_*`` prefix used elsewhere in the stack so the deploy
+# tooling can set it alongside DB credentials in one ``.env``.
+ENV_BINARY_PATH = "PROTEA_INTERPROSCAN_BIN"
+
+# Default binary name when neither the payload nor the env var supplies
+# one. Bare name → ``$PATH`` resolution at exec time.
+_DEFAULT_BINARY = "interproscan.sh"
+
+# Bounded timeout for ``interproscan.sh --version``. The flag prints a
+# one-line banner and exits; anything slower than this is already a
+# misconfiguration we want to surface, not silently wait on.
+_VERSION_TIMEOUT_SECONDS = 30
+
+# Hint surfaced in the ``RuntimeError`` when the binary is missing.
+# Installation docs:
+# https://interproscan-docs.readthedocs.io/en/latest/InstallationRequirements.html
+_INSTALL_HINT = (
+    "InterProScan is not installed or not on PATH. Install it from "
+    "https://interproscan-docs.readthedocs.io/ or set the "
+    f"{ENV_BINARY_PATH} environment variable to the absolute path of "
+    "interproscan.sh."
+)
+
+
+@dataclass(frozen=True)
+class _CommandSpec:
+    """Internal value object: the binary path + the full argv vector.
+
+    Split out of :meth:`InterProSource.run` so the argv construction
+    stays a one-screen helper and the smell-budget method-LOC ceiling
+    (60 LOC) is comfortable.
+    """
+
+    binary: str
+    argv: tuple[str, ...]
+
+
+def _resolve_binary(payload: InterProRunPayload) -> str:
+    """Pick the ``interproscan.sh`` path with the documented fallback order.
+
+    1. ``payload.binary_path`` (explicit caller override).
+    2. ``$PROTEA_INTERPROSCAN_BIN`` (deploy-tool setting).
+    3. Bare ``"interproscan.sh"`` (relies on ``$PATH``).
+    """
+    if payload.binary_path:
+        return payload.binary_path
+    env_value = os.environ.get(ENV_BINARY_PATH)
+    if env_value:
+        return env_value
+    return _DEFAULT_BINARY
+
+
+def _build_command(payload: InterProRunPayload, binary: str) -> _CommandSpec:
+    """Assemble the ``interproscan.sh`` argv for one run.
+
+    The canonical triple is ``-i <fasta> -f tsv -o -`` (the dash means
+    write to stdout). ``payload.extra_args`` is appended last so the
+    caller can layer on ``-iprlookup`` / ``-goterms`` / ``-pa`` /
+    ``-appl`` / ``-cpu`` without the plugin needing first-class flags
+    for each.
+    """
+    argv = (
+        binary,
+        "-i",
+        payload.fasta_path,
+        "-f",
+        "tsv",
+        "-o",
+        "-",
+        *payload.extra_args,
+    )
+    return _CommandSpec(binary=binary, argv=argv)
+
+
+def _capture_version(binary: str) -> str:
+    """Run ``<binary> --version`` and return the first non-blank line.
+
+    InterProScan prints a banner like ``InterProScan-5.66-98.0``
+    followed by an optional copyright tail. We keep the first non-blank
+    line so the value matches what the docs and the TSV header use.
+    A missing binary surfaces as :class:`RuntimeError` here so callers
+    do not have to special-case the same error twice (version probe +
+    main run).
+    """
+    try:
+        completed = subprocess.run(
+            [binary, "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_VERSION_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"{_INSTALL_HINT} (tried: {binary!r})") from exc
+    stdout = completed.stdout or completed.stderr
+    for line in stdout.splitlines():
+        candidate = line.strip()
+        if candidate:
+            return candidate
+    return ""
+
+
+def _run_subprocess(spec: _CommandSpec, timeout_seconds: int) -> str:
+    """Invoke ``interproscan.sh`` and return the captured stdout TSV.
+
+    ``check=True`` so a non-zero exit becomes
+    :class:`subprocess.CalledProcessError`; the operation layer's retry
+    policy decides whether to retry. The timeout is forwarded straight
+    to :func:`subprocess.run` so a hung child process raises rather than
+    blocking the worker forever.
+    """
+    try:
+        completed = subprocess.run(
+            list(spec.argv),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"{_INSTALL_HINT} (tried: {spec.binary!r})") from exc
+    return completed.stdout or ""
 
 
 class InterProSource(AnnotationSource):
@@ -54,7 +193,50 @@ class InterProSource(AnnotationSource):
         Accepts a filesystem path or an in-memory TSV blob. Exists on
         the plugin class so ``protea-core`` callers can reach the
         parser through the discovered plugin instance without
-        importing the parser module directly — keeps the import
+        importing the parser module directly, keeping the import
         surface narrow as IP.1b/IP.2 add more methods.
         """
         yield from parse_interproscan_tsv(source)
+
+    def run(
+        self,
+        payload: InterProRunPayload,
+        *,
+        emit: Any,
+    ) -> Iterator[InterProAnnotation]:
+        """Invoke ``interproscan.sh`` and yield parsed annotations.
+
+        Workflow:
+
+        1. Resolve the binary path (payload override → env var → PATH).
+        2. Probe ``--version`` so every record carries the release tag
+           that produced it (column-12-style provenance).
+        3. Run ``interproscan.sh -i <fasta> -f tsv -o -`` (plus
+           ``payload.extra_args``) under a wall-clock timeout, capture
+           stdout, and parse it through :func:`parse_interproscan_tsv`.
+        4. Override each record's ``ipr_release_version`` with the
+           ``--version`` value so the field is populated even when the
+           TSV stdout has no ``#``-header.
+
+        ``emit(event, payload, fields, level)`` mirrors the GOA / UniProt
+        plugins so ``protea-core`` can stream lifecycle events into the
+        job-log queue without coupling to a logger instance.
+        """
+        binary = _resolve_binary(payload)
+        release_version = _capture_version(binary)
+        emit(
+            "source.interpro.run_start",
+            None,
+            {"binary": binary, "release_version": release_version},
+            "info",
+        )
+        spec = _build_command(payload, binary)
+        stdout_tsv = _run_subprocess(spec, payload.timeout_seconds)
+        emit(
+            "source.interpro.run_done",
+            None,
+            {"binary": binary, "stdout_bytes": len(stdout_tsv)},
+            "info",
+        )
+        for record in parse_interproscan_tsv(stdout_tsv):
+            yield record.model_copy(update={"ipr_release_version": release_version})

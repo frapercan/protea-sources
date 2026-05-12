@@ -1,6 +1,6 @@
-"""Tests for the InterProScan source plugin (IP.1a — scaffold + parser).
+"""Tests for the InterProScan source plugin (IP.1a + IP.1b).
 
-Three layers, mirroring ``test_goa.py`` / ``test_quickgo.py``:
+Layers, mirroring ``test_goa.py`` / ``test_quickgo.py``:
 
 * **Contract tests**: plugin is an :class:`AnnotationSource` instance,
   has the right ``name``/``version``, and is resolvable through the
@@ -11,22 +11,30 @@ Three layers, mirroring ``test_goa.py`` / ``test_quickgo.py``:
   rows.
 * **Adapter shim tests**: ``InterProSource.parse_tsv`` accepts both a
   filesystem path and an in-memory blob.
+* **Runner tests (IP.1b)**: :meth:`InterProSource.run` invokes
+  ``interproscan.sh`` via :func:`subprocess.run` (mocked), captures
+  the ``--version`` banner, threads it onto every yielded record, and
+  surfaces a clear :class:`RuntimeError` when the binary is missing.
 
-No HTTP, no subprocess, no DB — IP.1a is parse-only. IP.1b will add
-``interproscan.sh`` invocation tests under a separate fixture.
+The runner tests use :func:`unittest.mock.patch` so the CI runner does
+not need a real InterProScan install.
 """
 
 from __future__ import annotations
 
+import subprocess
 from importlib.metadata import entry_points
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from protea_contracts import AnnotationSource
 from pydantic import ValidationError
 
 from protea_sources.interpro import (
+    ENV_BINARY_PATH,
     InterProAnnotation,
+    InterProRunPayload,
     InterProSource,
     parse_interproscan_tsv,
     parse_interproscan_tsv_line,
@@ -299,3 +307,208 @@ def test_pydantic_forbids_extra_fields() -> None:
             end=100,
             unknown_field="boom",  # type: ignore[call-arg]
         )
+
+
+# -- IP.1b: subprocess runner ---------------------------------------------
+
+
+_VERSION_BANNER = "InterProScan-5.66-98.0\nCopyright (c) EMBL-EBI"
+_RUN_TSV_BODY = _PFAM_ROW + "\n" + _GENE3D_ROW + "\n"
+
+
+def _completed(stdout: str = "", stderr: str = "") -> MagicMock:
+    """Build a stand-in :class:`subprocess.CompletedProcess`.
+
+    A bare ``MagicMock`` is enough because the runner only reads
+    ``.stdout`` / ``.stderr``; everything else stays untouched.
+    """
+    cp = MagicMock()
+    cp.stdout = stdout
+    cp.stderr = stderr
+    cp.returncode = 0
+    return cp
+
+
+def _capture_emit() -> tuple[object, list[tuple]]:
+    captured: list[tuple] = []
+
+    def emit(event: str, _payload: object, fields: object, level: str) -> None:
+        captured.append((event, fields, level))
+
+    return emit, captured
+
+
+def _make_subprocess_run_double(version_stdout: str, run_stdout: str) -> MagicMock:
+    """Build a ``subprocess.run`` double that returns version then TSV.
+
+    The runner calls ``subprocess.run`` twice: once for ``--version``,
+    once for the real invocation. Routing by argv keeps the test from
+    coupling to call order if a future refactor reorders the probes.
+    """
+
+    def fake_run(argv: list[str], **_kwargs: object) -> MagicMock:
+        if "--version" in argv:
+            return _completed(stdout=version_stdout)
+        return _completed(stdout=run_stdout)
+
+    return MagicMock(side_effect=fake_run)
+
+
+class TestInterProRunPayload:
+    def test_defaults_are_safe(self) -> None:
+        payload = InterProRunPayload(fasta_path="/tmp/in.fa")
+        assert payload.fasta_path == "/tmp/in.fa"
+        assert payload.extra_args == []
+        assert payload.timeout_seconds > 0
+        assert payload.binary_path is None
+
+    def test_frozen_rejects_mutation(self) -> None:
+        payload = InterProRunPayload(fasta_path="/tmp/in.fa")
+        with pytest.raises(ValidationError):
+            payload.fasta_path = "/tmp/other.fa"  # type: ignore[misc]
+
+    def test_extra_field_forbidden(self) -> None:
+        with pytest.raises(ValidationError):
+            InterProRunPayload(
+                fasta_path="/tmp/in.fa",
+                unknown="boom",  # type: ignore[call-arg]
+            )
+
+    def test_zero_timeout_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            InterProRunPayload(fasta_path="/tmp/in.fa", timeout_seconds=0)
+
+
+class TestInterProRunSubprocess:
+    """Smoke tests for :meth:`InterProSource.run` with mocked subprocess."""
+
+    def _run(self, payload: InterProRunPayload) -> tuple[list[InterProAnnotation], list[tuple]]:
+        fake = _make_subprocess_run_double(_VERSION_BANNER, _RUN_TSV_BODY)
+        emit, captured = _capture_emit()
+        with patch("protea_sources.interpro.source.subprocess.run", fake):
+            records = list(plugin.run(payload, emit=emit))
+        return records, captured
+
+    def test_yields_records_from_stdout_tsv(self) -> None:
+        records, _ = self._run(InterProRunPayload(fasta_path="/tmp/in.fa"))
+        assert len(records) == 2
+        assert {r.source_db for r in records} == {"Pfam", "Gene3D"}
+
+    def test_records_carry_version_banner(self) -> None:
+        records, _ = self._run(InterProRunPayload(fasta_path="/tmp/in.fa"))
+        for record in records:
+            assert record.ipr_release_version == "InterProScan-5.66-98.0"
+
+    def test_run_emits_start_and_done_events(self) -> None:
+        _, captured = self._run(InterProRunPayload(fasta_path="/tmp/in.fa"))
+        events = [event for event, *_ in captured]
+        assert "source.interpro.run_start" in events
+        assert "source.interpro.run_done" in events
+
+    def test_version_event_carries_release_string(self) -> None:
+        _, captured = self._run(InterProRunPayload(fasta_path="/tmp/in.fa"))
+        starts = [fields for event, fields, _ in captured if event == "source.interpro.run_start"]
+        assert starts
+        assert starts[0]["release_version"] == "InterProScan-5.66-98.0"
+
+    def test_argv_uses_canonical_flags(self) -> None:
+        fake = _make_subprocess_run_double(_VERSION_BANNER, _RUN_TSV_BODY)
+        emit, _ = _capture_emit()
+        payload = InterProRunPayload(fasta_path="/data/in.fa")
+        with patch("protea_sources.interpro.source.subprocess.run", fake):
+            list(plugin.run(payload, emit=emit))
+        # Second call is the real invocation; first is --version.
+        argv_calls = [call.args[0] for call in fake.call_args_list]
+        version_call = next(argv for argv in argv_calls if "--version" in argv)
+        run_call = next(argv for argv in argv_calls if "--version" not in argv)
+        assert version_call[0].endswith("interproscan.sh")
+        assert run_call[:7] == [
+            version_call[0],
+            "-i",
+            "/data/in.fa",
+            "-f",
+            "tsv",
+            "-o",
+            "-",
+        ]
+
+    def test_extra_args_appended_after_canonical_flags(self) -> None:
+        fake = _make_subprocess_run_double(_VERSION_BANNER, _RUN_TSV_BODY)
+        emit, _ = _capture_emit()
+        payload = InterProRunPayload(
+            fasta_path="/data/in.fa",
+            extra_args=["-iprlookup", "-goterms", "-cpu", "4"],
+        )
+        with patch("protea_sources.interpro.source.subprocess.run", fake):
+            list(plugin.run(payload, emit=emit))
+        run_call = next(
+            argv for argv in (c.args[0] for c in fake.call_args_list) if "--version" not in argv
+        )
+        assert run_call[-4:] == ["-iprlookup", "-goterms", "-cpu", "4"]
+
+    def test_env_var_overrides_default_binary(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(ENV_BINARY_PATH, "/opt/interproscan/interproscan.sh")
+        fake = _make_subprocess_run_double(_VERSION_BANNER, _RUN_TSV_BODY)
+        emit, _ = _capture_emit()
+        payload = InterProRunPayload(fasta_path="/data/in.fa")
+        with patch("protea_sources.interpro.source.subprocess.run", fake):
+            list(plugin.run(payload, emit=emit))
+        argv_calls = [call.args[0] for call in fake.call_args_list]
+        assert all(argv[0] == "/opt/interproscan/interproscan.sh" for argv in argv_calls)
+
+    def test_payload_binary_path_beats_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(ENV_BINARY_PATH, "/from/env/interproscan.sh")
+        fake = _make_subprocess_run_double(_VERSION_BANNER, _RUN_TSV_BODY)
+        emit, _ = _capture_emit()
+        payload = InterProRunPayload(
+            fasta_path="/data/in.fa",
+            binary_path="/explicit/interproscan.sh",
+        )
+        with patch("protea_sources.interpro.source.subprocess.run", fake):
+            list(plugin.run(payload, emit=emit))
+        argv_calls = [call.args[0] for call in fake.call_args_list]
+        assert all(argv[0] == "/explicit/interproscan.sh" for argv in argv_calls)
+
+    def test_subprocess_run_uses_check_and_timeout(self) -> None:
+        fake = _make_subprocess_run_double(_VERSION_BANNER, _RUN_TSV_BODY)
+        emit, _ = _capture_emit()
+        payload = InterProRunPayload(fasta_path="/data/in.fa", timeout_seconds=900)
+        with patch("protea_sources.interpro.source.subprocess.run", fake):
+            list(plugin.run(payload, emit=emit))
+        for call in fake.call_args_list:
+            assert call.kwargs.get("check") is True
+            assert call.kwargs.get("timeout") is not None and call.kwargs["timeout"] > 0
+        # Main-run call must use the payload-provided timeout.
+        main_call = next(
+            c for c in fake.call_args_list if "--version" not in c.args[0]
+        )
+        assert main_call.kwargs["timeout"] == 900
+
+    def test_missing_binary_raises_runtime_error_with_hint(self) -> None:
+        emit, _ = _capture_emit()
+        payload = InterProRunPayload(fasta_path="/data/in.fa")
+        with patch(
+            "protea_sources.interpro.source.subprocess.run",
+            side_effect=FileNotFoundError(2, "No such file", "interproscan.sh"),
+        ):
+            with pytest.raises(RuntimeError) as excinfo:
+                list(plugin.run(payload, emit=emit))
+        message = str(excinfo.value)
+        assert "InterProScan" in message
+        assert ENV_BINARY_PATH in message
+        assert "interproscan.sh" in message
+
+    def test_non_zero_exit_propagates_as_called_process_error(self) -> None:
+        emit, _ = _capture_emit()
+        payload = InterProRunPayload(fasta_path="/data/in.fa")
+        # Version succeeds; the main run errors with a non-zero exit.
+        version_double = _completed(stdout=_VERSION_BANNER)
+
+        def fake_run(argv: list[str], **_kwargs: object) -> MagicMock:
+            if "--version" in argv:
+                return version_double
+            raise subprocess.CalledProcessError(returncode=2, cmd=argv, stderr="boom")
+
+        with patch("protea_sources.interpro.source.subprocess.run", side_effect=fake_run):
+            with pytest.raises(subprocess.CalledProcessError):
+                list(plugin.run(payload, emit=emit))

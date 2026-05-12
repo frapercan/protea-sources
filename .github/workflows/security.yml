@@ -1,0 +1,44 @@
+name: security
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install poetry
+        run: pipx install poetry
+      - name: Install production deps
+        run: poetry install --only main
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: pip-audit (non-blocking; will gate on HIGH severity once F-OPS T-OPS.7 lands)
+        run: poetry run pip-audit --strict --vulnerability-service osv || true
+
+  bandit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install bandit
+        run: pip install "bandit[toml]"
+      - name: Run bandit on src/
+        run: bandit --severity-level high --confidence-level high -r src/ || true

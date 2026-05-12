@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 name = "protea-sources"
 version = "0.0.1"
-description = "Annotation source plugins for the PROTEA stack: GOA, QuickGO, UniProt, future InterProScan."
+description = "Annotation source plugins for the PROTEA stack: GOA, QuickGO, UniProt, InterProScan."
 authors = ["Francisco Miguel Pérez Canales <frapercan1@gmail.com>"]
 license = "MIT"
 readme = "README.md"
@@ -22,7 +22,7 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = ">=3.12,<4.0"
-"protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", branch = "master" }
+"protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", branch = "develop" }
 requests = ">=2.31"
 
 [tool.poetry.group.dev.dependencies]
@@ -48,6 +48,7 @@ sphinx-design = ">=0.5"
 goa = "protea_sources.goa:plugin"
 quickgo = "protea_sources.quickgo:plugin"
 uniprot = "protea_sources.uniprot:plugin"
+interpro = "protea_sources.interpro:plugin"
 
 [tool.ruff]
 line-length = 100
@@ -61,6 +62,17 @@ ignore = ["E501"]
 python_version = "3.10"
 strict = true
 warn_unused_ignores = true
+# numpy / pandas generic types add ``Any, Any`` bloat; tighten when
+# the upstream stubs stabilise.
+disallow_any_generics = false
+
+[[tool.mypy.overrides]]
+# Tests use **kwargs unpacking, untyped fixture functions, and tuple
+# literals freely; strict typing on tests adds ceremony without
+# catching real bugs in the source code (which remains strict above).
+# Mirrors PROTEA's per-module ignore for routers / operations.
+module = ["tests.*"]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -14,7 +14,7 @@ copyright = "2026, Francisco Miguel Pérez Canales"
 
 try:
     release = _pkg_version("protea-sources")
-except Exception:  # noqa: BLE001
+except Exception:
     release = "0.0.1"
 version = release
 

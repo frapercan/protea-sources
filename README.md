@@ -6,6 +6,11 @@ from [`protea-contracts`](https://github.com/frapercan/protea-contracts)
 and registers via the `protea.sources` `entry_points` group, so
 `protea-core` discovers it at startup.
 
+**Status:** v0.0.1 (experimental, pre-1.0; API may change across minor releases).
+See the [PROTEA stack architecture](https://github.com/frapercan/PROTEA#repositories-in-the-protea-stack) for where this package fits.
+
+**Entry points exposed:** `protea.sources` group: `goa`, `quickgo`, `uniprot`, `interpro`.
+
 The sources are **self-contained**: HTTP retries / pagination / parsing
 all live here. Persistence (DB writes against PROTEA's ORM) stays in
 the calling operation. The plugin/operation boundary is defined by
@@ -46,7 +51,7 @@ eco_map = quickgo.fetch_eco_mapping(...)
 for record in quickgo.stream(QuickGoStreamPayload(...), emit=emit):
     evidence_code = eco_map.get(record.eco_id, record.eco_id)
 
-# UniProt has two modalities — call the specific method.
+# UniProt has two modalities; call the specific method.
 for protein in uniprot.stream_fasta(UniProtFastaStreamPayload(...), emit=emit):
     print(protein.accession, protein.canonical_accession, protein.length)
 
@@ -65,9 +70,9 @@ one-way, drift is impossible.
 | `protea_sources.goa` | UniProt-GOA bulk download (EBI FTP) | GAF stream | **active** (turn 25 of master plan v3) |
 | `protea_sources.quickgo` | QuickGO REST API | TSV + ECO mapping | **active** (turn 27) |
 | `protea_sources.uniprot` | UniProt REST | FASTA + metadata TSV | **active** (turns 32, 34) |
-| `protea_sources.interproscan` | InterProScan local runs | future | post-defensa |
+| `protea_sources.interpro` | InterProScan local subprocess runs | TSV adapter | **active** (IP.1a/IP.1b) |
 
-All three active sources have **100% test coverage** on the parsing
+All four active sources have **100% test coverage** on the parsing
 + HTTP wiring. The `_http.py` retry helper (UniProt-only today)
 absorbs the legacy `UniProtHttpMixin` that used to live in PROTEA;
 shared retry/backoff/jitter behaviour with Retry-After honouring.
@@ -174,7 +179,7 @@ Single source of truth: [`docs/source/_data/stack.yaml`](https://github.com/frap
 | [PROTEA](https://github.com/frapercan/PROTEA) | Platform | `active` | Backend platform. Hosts the ORM, job queue, FastAPI surface, frontend, and orchestration. |
 | [protea-contracts](https://github.com/frapercan/protea-contracts) | Contracts | `beta` | Shared contract surface. ABCs, pydantic payloads, feature schema, schema_sha. Imported by every other repo. |
 | [protea-method](https://github.com/frapercan/protea-method) | Inference | `skeleton` | Pure inference path (KNN, feature compute, reranker apply). Target of the F2C extraction. Bind-mounted by the LAFA containers. |
-| **protea-sources** (this repo) | Source plugin | `skeleton` | Annotation source plugins (GOA, QuickGO, UniProt). Discovered via Python entry_points. |
+| **protea-sources** (this repo) | Source plugin | `active` | Annotation source plugins (GOA, QuickGO, UniProt, InterPro). Discovered via Python entry_points. |
 | [protea-runners](https://github.com/frapercan/protea-runners) | Runner plugin | `skeleton` | Experiment runner plugins (LightGBM lab, KNN baseline, future GNN). Discovered via Python entry_points. |
 | [protea-backends](https://github.com/frapercan/protea-backends) | Backend plugin | `skeleton` | Protein language model embedding backends (ESM family, T5/ProstT5, Ankh, ESM3-C). Discovered via Python entry_points. |
 | [protea-reranker-lab](https://github.com/frapercan/protea-reranker-lab) | Lab | `active` | LightGBM reranker training lab. Pulls datasets from PROTEA, trains boosters, publishes them back via /reranker-models/import-by-reference. |

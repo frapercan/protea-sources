@@ -11,9 +11,18 @@ scopes the work to:
 * Entry-point registration under the ``protea.sources`` group so
   ``protea-core`` discovers the plugin at startup.
 
+Delivered in IP.1b:
+
+* :meth:`InterProSource.run` invokes ``interproscan.sh`` via
+  :mod:`subprocess`, captures the stdout TSV, and yields parsed
+  records with the ``--version`` release tag threaded through.
+* :class:`InterProRunPayload` carries the typed inputs (FASTA path,
+  extra CLI flags, timeout, optional binary override).
+* ``PROTEA_INTERPROSCAN_BIN`` env variable selects a non-default
+  binary path when ``payload.binary_path`` is unset.
+
 Deferred to follow-up slices:
 
-* IP.1b: live ``subprocess.run("interproscan.sh ...")`` execution.
 * IP.1c (optional): REST-API fallback.
 * IP.2: ORM model ``interpro_annotation`` in PROTEA core.
 * IP.3: ``run_interproscan_batch`` operation that wires the plugin
@@ -47,7 +56,8 @@ from protea_sources.interpro.parser import (
     parse_interproscan_tsv_line,
     parse_release_version_header,
 )
-from protea_sources.interpro.source import InterProSource
+from protea_sources.interpro.payload import InterProRunPayload
+from protea_sources.interpro.source import ENV_BINARY_PATH, InterProSource
 
 #: Module-level plugin instance discovered via the ``protea.sources``
 #: entry_points group. ``pyproject.toml`` registers it as
@@ -55,7 +65,9 @@ from protea_sources.interpro.source import InterProSource
 plugin = InterProSource()
 
 __all__ = [
+    "ENV_BINARY_PATH",
     "InterProAnnotation",
+    "InterProRunPayload",
     "InterProSource",
     "parse_interproscan_tsv",
     "parse_interproscan_tsv_line",

@@ -5,7 +5,7 @@ from __future__ import annotations
 from importlib.metadata import entry_points
 
 import protea_sources
-from protea_sources import goa, quickgo, uniprot
+from protea_sources import goa, interpro, quickgo, uniprot
 
 
 def test_version_is_string() -> None:
@@ -16,10 +16,11 @@ def test_submodules_importable() -> None:
     assert hasattr(goa, "plugin")
     assert hasattr(quickgo, "plugin")
     assert hasattr(uniprot, "plugin")
+    assert hasattr(interpro, "plugin")
 
 
 def test_entry_points_registered() -> None:
-    """protea.sources entry_points group must list all 3 sub-modules.
+    """protea.sources entry_points group must list all 4 sub-modules.
 
     Each plugin is a real ``AnnotationSource`` subclass post-F2A.6; the
     per-plugin test files (``test_goa.py`` etc.) cover ABC compliance
@@ -30,6 +31,7 @@ def test_entry_points_registered() -> None:
     assert "goa" in names
     assert "quickgo" in names
     assert "uniprot" in names
+    assert "interpro" in names
 
 
 def test_no_platform_imports_leak() -> None:

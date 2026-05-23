@@ -1,33 +1,71 @@
 # protea-sources
 
-Annotation source plugins for the [PROTEA](https://github.com/frapercan/protea)
-stack. Each sub-module implements the `AnnotationSource` marker ABC
-from [`protea-contracts`](https://github.com/frapercan/protea-contracts)
-and registers via the `protea.sources` `entry_points` group, so
-`protea-core` discovers it at startup.
+**Annotation source plugins for the PROTEA stack.**
+Each sub-module implements the `AnnotationSource` ABC from
+[`protea-contracts`](https://github.com/frapercan/protea-contracts) and
+registers via the `protea.sources` `entry_points` group so that
+`protea-core` discovers it at startup without any code changes.
+
+[![Lint](https://github.com/frapercan/protea-sources/actions/workflows/lint.yml/badge.svg)](https://github.com/frapercan/protea-sources/actions/workflows/lint.yml)
+[![Tests](https://github.com/frapercan/protea-sources/actions/workflows/test.yml/badge.svg)](https://github.com/frapercan/protea-sources/actions/workflows/test.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 
 **Status:** v0.0.1 (experimental, pre-1.0; API may change across minor releases).
-See the [PROTEA stack architecture](https://github.com/frapercan/PROTEA#repositories-in-the-protea-stack) for where this package fits.
 
-**Entry points exposed:** `protea.sources` group: `goa`, `quickgo`, `uniprot`, `interpro`.
+---
 
-The sources are **self-contained**: HTTP retries / pagination / parsing
-all live here. Persistence (DB writes against PROTEA's ORM) stays in
-the calling operation. The plugin/operation boundary is defined by
-the typed records and payloads in `protea-contracts.records`.
+## What this package does
 
-## 5 minutes to your first parsed record
+A source plugin owns the **network and parsing** side of annotation
+ingestion: downloading a release (GAF, TSV, FASTA, or InterProScan TSV),
+streaming records, and yielding typed pydantic objects from
+`protea-contracts`. Persistence (DB filtering, GO-term resolution, bulk
+insert) stays in the `protea-core` operations that consume those streams.
+
+The plugin/operation boundary is the typed record stream defined in
+`protea-contracts.records`: plugins yield frozen pydantic models and
+know nothing about the ORM; operations own the session, per-page
+commits, and deduplication logic.
+
+---
+
+## Place in the stack
+
+```
+External databases
+  └─ protea-sources   (download, parse, yield typed records)
+        └─ protea-core operations   (filter, bulk insert, commit)
+              └─ PROTEA job queue
+```
+
+`protea-core` resolves a source at runtime through
+`importlib.metadata.entry_points`:
+
+```python
+from importlib.metadata import entry_points
+plugin = entry_points(group="protea.sources")["goa"].load()
+```
+
+---
+
+## Install
 
 ```bash
 pip install protea-sources
 ```
 
+No per-source extras: the upstream protocols (HTTP, gzip, TSV, FASTA)
+are covered by `requests`, the only non-contracts runtime dependency.
+
+---
+
+## Quick example
+
 ```python
 from protea_contracts import GoaStreamPayload
 from protea_sources.goa import plugin as goa
 
-# Stream parsed records from a GAF URL.
-emit = lambda *a, **k: None  # ignore structured-event callbacks
+emit = lambda *a, **kw: None  # discard structured-event callbacks
 payload = GoaStreamPayload(gaf_url="https://example.com/small.gaf")
 
 for record in goa.stream(payload, emit=emit):
@@ -35,100 +73,107 @@ for record in goa.stream(payload, emit=emit):
     # P12345 GO:0000123 IDA
 ```
 
-The same shape works for QuickGO (TSV with optional ECO mapping)
-and UniProt FASTA / metadata (cursor-paginated):
+QuickGO (TSV with optional ECO mapping):
 
 ```python
-from protea_contracts import (
-    QuickGoStreamPayload, UniProtFastaStreamPayload,
-    UniProtMetadataStreamPayload,
-)
+from protea_contracts import QuickGoStreamPayload
 from protea_sources.quickgo import plugin as quickgo
-from protea_sources.uniprot import plugin as uniprot
 
-# QuickGO with auxiliary ECO mapping fetch (D-MIGR-05 of master plan v3).
-eco_map = quickgo.fetch_eco_mapping(...)
+eco_map = quickgo.fetch_eco_mapping(eco_url="https://example.com/eco.obo")
 for record in quickgo.stream(QuickGoStreamPayload(...), emit=emit):
-    evidence_code = eco_map.get(record.eco_id, record.eco_id)
-
-# UniProt has two modalities; call the specific method.
-for protein in uniprot.stream_fasta(UniProtFastaStreamPayload(...), emit=emit):
-    print(protein.accession, protein.canonical_accession, protein.length)
-
-for meta in uniprot.stream_metadata(UniProtMetadataStreamPayload(...), emit=emit):
-    print(meta.accession, meta.raw_fields["Active site"])
+    code = eco_map.get(record.eco_id, record.eco_id)
 ```
 
-Records are frozen pydantic models defined in
-`protea-contracts.records` — typos fail at construction, dataflow is
-one-way, drift is impossible.
+InterProScan via local subprocess:
 
-## Sources shipped today
+```python
+from protea_sources.interpro import plugin as interpro, InterProRunPayload
 
-| Sub-module | Source | Modality | Status |
-|------------|--------|----------|--------|
-| `protea_sources.goa` | UniProt-GOA bulk download (EBI FTP) | GAF stream | **active** (turn 25 of master plan v3) |
-| `protea_sources.quickgo` | QuickGO REST API | TSV + ECO mapping | **active** (turn 27) |
-| `protea_sources.uniprot` | UniProt REST | FASTA + metadata TSV | **active** (turns 32, 34) |
-| `protea_sources.interpro` | InterProScan local subprocess runs | TSV adapter | **active** (IP.1a/IP.1b) |
+payload = InterProRunPayload(fasta_path="/data/proteins.fasta", timeout=3600)
+for annotation in interpro.run(payload, emit=emit):
+    print(annotation.accession, annotation.source_db, annotation.start, annotation.end)
+```
 
-All four active sources have **100% test coverage** on the parsing
-+ HTTP wiring. The `_http.py` retry helper (UniProt-only today)
-absorbs the legacy `UniProtHttpMixin` that used to live in PROTEA;
-shared retry/backoff/jitter behaviour with Retry-After honouring.
+Records are frozen pydantic models from `protea-contracts`: typos fail
+at construction time, dataflow is one-way, schema drift is impossible.
+
+---
+
+## Sources
+
+| Plugin | Source | Modality | Coverage |
+|--------|--------|----------|----------|
+| `protea_sources.goa` | UniProt-GOA bulk GAF (EBI FTP, HTTP + gzip) | GAF 2.x stream | 100% |
+| `protea_sources.quickgo` | QuickGO REST API | TSV + ECO mapping | 100% |
+| `protea_sources.uniprot` | UniProt REST | FASTA + metadata TSV | 100% / 93% (`_http.py`) |
+| `protea_sources.interpro` | InterProScan subprocess + TSV parser | TSV stream | 100% (parser + payload) |
+
+The `_http.py` retry client (UniProt) provides exponential backoff with
+jitter, `Retry-After` header parsing, and `Link`-header cursor
+extraction. Future sources that need retry logic reuse this client.
+
+---
 
 ## Why a separate package
 
 1. **Plugin extensibility.** New sources are added without touching
    `protea-core`. A single sub-module here plus one entry in
-   `pyproject.toml`.
+   `pyproject.toml` is all that is required.
 2. **Self-contained.** HTTP, parsing, and source-specific retries
    live here. `protea-core` owns persistence; the boundary is the
    typed record stream defined in `protea-contracts`.
 3. **Testable in isolation.** No DB, no SQLAlchemy. Parser tests run
    against canned bytes; HTTP tests run against `requests.get` mocks.
 
-## Adding a new source
+---
 
-1. Create `src/protea_sources/<your_name>/__init__.py`.
-2. Subclass `AnnotationSource` (marker ABC). Set `name = "<your_name>"`
-   and `version = "<release-id>"`.
-3. Define the modality method(s). For most sources a single
-   `stream(payload, *, emit) -> Iterator[YourRecord]` is enough;
-   UniProt is an exception with two modalities.
-4. Add typed payload + record models in `protea-contracts.records`
-   (or here if the source is private to your fork).
-5. Register the plugin under `[tool.poetry.plugins."protea.sources"]`
-   in `pyproject.toml`.
-6. Mirror the existing test files (`tests/test_<your_name>.py`) with
-   contract tests, parser tests, and stream-wiring tests.
+## Architecture
 
-The full guide lives in the Sphinx docs under
-`docs/source/contributing.rst`.
+```
+src/protea_sources/
+    goa/              # HTTP + gzip + GAF 2.x parser
+    quickgo/          # QuickGO REST, cursor pagination, ECO mapping
+    uniprot/          # UniProt REST (FASTA + metadata); _http.py retry client
+    interpro/
+        parser.py     # pure TSV parsing (no subprocess, no network)
+        payload.py    # InterProRunPayload typed input model
+        source.py     # subprocess runner + version-header parsing
+```
+
+Full API reference and per-source operational notes (TSV column layout,
+cursor extraction, ECO mapping, GAF quirks) live in the Sphinx docs:
+
+```bash
+poetry install --with docs
+cd docs && make html
+# open docs/build/html/index.html
+```
+
+---
 
 ## Versioning
 
-SemVer 2.0.0; per-source release independence is deferred to F9
-(post-defensa) by splitting each sub-module into its own repo.
-Today they share a release cycle because adding a new source
-typically means adding new typed records to `protea-contracts` too,
-and the version bump there is what drives downstream re-builds.
+SemVer 2.0.0. All sources share a release cycle because adding a new
+source typically means adding new typed records to `protea-contracts`
+as well, and the version bump there drives downstream rebuilds.
+
+---
 
 ## Development
 
 ```bash
 poetry install
-poetry run pytest             # ~175 tests, ~0.3s
+poetry run pytest             # unit + parser tests, ~0.3 s
 poetry run ruff check .
 poetry run mypy --strict src
 ```
 
+---
+
 ## Contributing
 
-Contributions are welcome from research institutions and individual developers.
-
-**Branch strategy:** all changes target `develop`; `main` tracks stable
-releases only.
+Contributions are welcome from research institutions and individual
+developers. All changes target `develop`; `main` tracks stable releases.
 
 ```bash
 git clone https://github.com/frapercan/protea-sources.git
@@ -137,36 +182,40 @@ git checkout develop
 git checkout -b feature/my-source
 
 poetry install
-
-# Make your changes, then verify locally:
-poetry run pytest             # ~175 tests, < 1 s
+poetry run pytest
 poetry run ruff check .
 poetry run mypy --strict src
-
 # Open a pull request targeting develop
 ```
 
-Key constraints:
-- **Self-contained.** HTTP, parsing, and source-specific retries live
-  here. Persistence (DB writes) stays in the PROTEA operation that
-  calls the plugin. Do not import `sqlalchemy` or `protea-core`.
-- **Records are typed leaves.** Plugin `stream*()` methods must yield
-  pydantic records defined in `protea-contracts.records`. New record
-  shapes belong in `protea-contracts` first (with a coordinated version
-  bump), not in this package.
-- **Testable in isolation.** Parser tests run against canned bytes;
-  HTTP tests use `requests.get` mocks. No DB or network access in CI.
+**Adding a new source (five steps):**
 
-## Documentation
+1. Create `src/protea_sources/<name>/__init__.py` and subclass
+   `AnnotationSource` from `protea-contracts`.
+2. Add typed payload + record models to `protea-contracts` first
+   (coordinated version bump), then consume them here.
+3. Register the entry point under `[tool.poetry.plugins."protea.sources"]`
+   in `pyproject.toml`.
+4. Add tests in `tests/test_<name>.py` covering ABC compliance,
+   entry-point discoverability, and parser correctness on fixture bytes.
+5. Add a docs page in `docs/source/sources/<name>.rst` and add it to
+   the `toctree` in `docs/source/sources/index.rst`.
 
-Full Sphinx documentation in `docs/source/`. Build locally with
-`poetry install --with docs && cd docs && make html`. Each source
-has its own page documenting the modality, the URL shape, the TSV
-column mapping (where applicable), and the record fields exposed.
+The full guide is in `docs/source/contributing.rst`.
+
+**Key constraints:**
+- No `sqlalchemy` or `protea-core` imports. Plugins yield records only.
+- Records are frozen pydantic models defined in `protea-contracts`.
+- Parser tests run against canned bytes; HTTP tests use `requests` mocks.
+  No DB or network access in CI.
+
+---
 
 ## License
 
 MIT. See `LICENSE`.
+
+---
 
 <!-- protea-stack:start -->
 
@@ -178,7 +227,7 @@ Single source of truth: [`docs/source/_data/stack.yaml`](https://github.com/frap
 |------|------|--------|---------|
 | [PROTEA](https://github.com/frapercan/PROTEA) | Platform | `active` | Backend platform. Hosts the ORM, job queue, FastAPI surface, frontend, and orchestration. |
 | [protea-contracts](https://github.com/frapercan/protea-contracts) | Contracts | `beta` | Shared contract surface. ABCs, pydantic payloads, feature schema, schema_sha. Imported by every other repo. |
-| [protea-method](https://github.com/frapercan/protea-method) | Inference | `skeleton` | Pure inference path (KNN, feature compute, reranker apply). Target of the F2C extraction. Bind-mounted by the LAFA containers. |
+| [protea-method](https://github.com/frapercan/protea-method) | Inference | `active` | Pure inference path (KNN, feature compute, reranker apply). Target of the F2C extraction. Bind-mounted by the LAFA containers. |
 | **protea-sources** (this repo) | Source plugin | `active` | Annotation source plugins (GOA, QuickGO, UniProt, InterPro). Discovered via Python entry_points. |
 | [protea-runners](https://github.com/frapercan/protea-runners) | Runner plugin | `skeleton` | Experiment runner plugins (LightGBM lab, KNN baseline, future GNN). Discovered via Python entry_points. |
 | [protea-backends](https://github.com/frapercan/protea-backends) | Backend plugin | `skeleton` | Protein language model embedding backends (ESM family, T5/ProstT5, Ankh, ESM3-C). Discovered via Python entry_points. |

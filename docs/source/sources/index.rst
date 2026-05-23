@@ -12,3 +12,4 @@ parsing).
    goa
    quickgo
    uniprot
+   interpro

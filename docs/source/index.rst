@@ -35,9 +35,14 @@ At a glance
      - Cursor-based TSV streaming + ECO mapping; 100 % coverage.
    * - :doc:`uniprot <sources/uniprot>`
      - UniProt REST API
-     - FASTA stream real (turn 32); metadata pending
+     - FASTA stream active; metadata active
      - Cursor-based FASTA + isoform parsing + private retry/backoff
        client (``_http.py``).
+   * - :doc:`interpro <sources/interpro>`
+     - InterProScan subprocess / TSV
+     - Active (IP.1a + IP.1b)
+     - Local subprocess runner + pure TSV parser; 100 % coverage on
+       parser + payload; 90 %+ on source.
 
 Install
 -------

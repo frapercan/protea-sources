@@ -1,13 +1,48 @@
-name: Co-author guard
-
-# Server-side guard against Claude / Anthropic / AI-attribution
-# commit-message trailers. Invokes the reusable workflow in
-# frapercan/agent-farm. See FARM-1.1a in the farm-platform plan.
-
+name: coauthor-guard
 on:
   pull_request:
-    branches: [main, develop]
-
+    types: [opened, synchronize, reopened]
 jobs:
-  coauthor-guard:
-    uses: frapercan/agent-farm/.github/workflows/coauthor-guard.yml@main
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch base commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=200 origin "${BASE_SHA}"
+
+      - name: Scan commit messages for forbidden attribution
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          range="${BASE_SHA}..${HEAD_SHA}"
+          echo "Scanning commit range: ${range}"
+          tmp="$(mktemp)"
+          git log --format='commit %H%n%B%n---END---' "${range}" > "${tmp}"
+          pattern='co-authored-by:[[:space:]]*.*(claude|anthropic|noreply@anthropic)|generated[[:space:]]+with[[:space:]]+\[?claude|generated[[:space:]]+by[[:space:]]+\[?anthropic'
+          if grep -iEn "${pattern}" "${tmp}"; then
+            echo "ERROR: commit message contains forbidden Claude/Anthropic attribution."
+            echo "Fix: rebase the offending commit(s) and force-push the PR branch."
+            exit 1
+          fi
+          echo "OK: no forbidden attribution found in ${range}"
+
+      - name: Scan PR body for forbidden attribution
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          if printf '%s' "${PR_BODY:-}" | grep -iE "(co-authored-by:[[:space:]]*.*(claude|anthropic)|generated[[:space:]]+with[[:space:]]+claude|generated[[:space:]]+by[[:space:]]+anthropic)" > /dev/null; then
+            echo "::error::PR body contains Claude/Anthropic co-author mention."
+            exit 1
+          fi
+          echo "OK: no forbidden attribution found in PR body."

@@ -338,18 +338,27 @@ def _capture_emit() -> tuple[object, list[tuple]]:
     return emit, captured
 
 
-def _make_subprocess_run_double(version_stdout: str, run_stdout: str) -> MagicMock:
-    """Build a ``subprocess.run`` double that returns version then TSV.
+def _make_subprocess_run_double(version_stdout: str, run_tsv: str) -> MagicMock:
+    """Build a ``subprocess.run`` double that handles version and main run.
 
     The runner calls ``subprocess.run`` twice: once for ``--version``,
-    once for the real invocation. Routing by argv keeps the test from
-    coupling to call order if a future refactor reorders the probes.
+    once for the real invocation. For the real invocation the double
+    locates the ``-o <path>`` argument and writes ``run_tsv`` to that
+    file, mirroring what a real InterProScan 5.77 binary does (TSV goes
+    to the named output file; stdout carries only log lines).
+    Routing by argv keeps the test from coupling to call order.
     """
 
     def fake_run(argv: list[str], **_kwargs: object) -> MagicMock:
         if "--version" in argv:
             return _completed(stdout=version_stdout)
-        return _completed(stdout=run_stdout)
+        # Locate -o <path> and write the TSV there (no stdout data rows).
+        try:
+            out_idx = argv.index("-o") + 1
+            Path(argv[out_idx]).write_text(run_tsv, encoding="utf-8")
+        except (ValueError, IndexError):
+            pass
+        return _completed(stdout="")
 
     return MagicMock(side_effect=fake_run)
 
@@ -418,19 +427,26 @@ class TestInterProRunSubprocess:
         with patch("protea_sources.interpro.source.subprocess.run", fake):
             list(plugin.run(payload, emit=emit))
         # Second call is the real invocation; first is --version.
-        argv_calls = [call.args[0] for call in fake.call_args_list]
+        argv_calls = [c.args[0] for c in fake.call_args_list]
         version_call = next(argv for argv in argv_calls if "--version" in argv)
         run_call = next(argv for argv in argv_calls if "--version" not in argv)
         assert version_call[0].endswith("interproscan.sh")
-        assert run_call[:7] == [
+        # Canonical prefix: binary -i <fasta> -f tsv -o <real-file>.
+        # The output path is a temp file (not the stdout-dash "-").
+        assert run_call[:6] == [
             version_call[0],
             "-i",
             "/data/in.fa",
             "-f",
             "tsv",
             "-o",
-            "-",
         ]
+        out_path = run_call[6]
+        assert out_path != "-", (
+            "InterProScan 5.77 does not stream TSV to stdout; "
+            "-o must point to a real file, not '-'"
+        )
+        assert out_path.endswith(".tsv")
 
     def test_extra_args_appended_after_canonical_flags(self) -> None:
         fake = _make_subprocess_run_double(_VERSION_BANNER, _RUN_TSV_BODY)
@@ -512,3 +528,91 @@ class TestInterProRunSubprocess:
         with patch("protea_sources.interpro.source.subprocess.run", side_effect=fake_run):
             with pytest.raises(subprocess.CalledProcessError):
                 list(plugin.run(payload, emit=emit))
+
+    def test_done_event_carries_tsv_bytes_not_stdout_bytes(self) -> None:
+        """run_done event must use ``tsv_bytes`` key (not the old ``stdout_bytes``)."""
+        _, captured = self._run(InterProRunPayload(fasta_path="/tmp/in.fa"))
+        done_events = [(fields, level) for event, fields, level in captured
+                       if event == "source.interpro.run_done"]
+        assert done_events, "run_done event was not emitted"
+        fields, _ = done_events[0]
+        assert "tsv_bytes" in fields, (
+            "run_done must carry tsv_bytes (file read), not stdout_bytes"
+        )
+        assert fields["tsv_bytes"] > 0
+
+
+# -- Regression: stdout-vs-file capture (InterProScan 5.77) ---------------
+
+
+class TestInterProFileCapture:
+    """Regression tests for the stdout-vs-file capture bug.
+
+    InterProScan 5.77 does NOT write TSV data rows to stdout when
+    ``-o -`` is used.  The fix routes output through a named temp file
+    (``-o <path>``).  These tests verify that:
+
+    * a mock binary that writes TSV ONLY to the ``-o <file>`` path
+      (and emits nothing on stdout) still produces parsed records;
+    * a mock binary that emits TSV ONLY on stdout (the old broken path)
+      would produce zero records (documenting the regression baseline).
+    """
+
+    @staticmethod
+    def _run_with_file_writer(tsv_body: str) -> list[InterProAnnotation]:
+        """Mock: writes TSV to the -o file, emits only log lines to stdout."""
+
+        def fake_run(argv: list[str], **_kwargs: object) -> MagicMock:
+            if "--version" in argv:
+                return _completed(stdout=_VERSION_BANNER)
+            # Write TSV to the -o path; emit only a log line on stdout.
+            try:
+                out_path = argv[argv.index("-o") + 1]
+                Path(out_path).write_text(tsv_body, encoding="utf-8")
+            except (ValueError, IndexError):
+                pass
+            return _completed(stdout="[INFO] InterProScan job finished.\n")
+
+        emit, _ = _capture_emit()
+        payload = InterProRunPayload(fasta_path="/data/in.fa")
+        with patch("protea_sources.interpro.source.subprocess.run", MagicMock(side_effect=fake_run)):
+            return list(plugin.run(payload, emit=emit))
+
+    @staticmethod
+    def _run_with_stdout_only(tsv_body: str) -> list[InterProAnnotation]:
+        """Mock: writes TSV ONLY to stdout (the old broken behaviour)."""
+
+        def fake_run(argv: list[str], **_kwargs: object) -> MagicMock:
+            if "--version" in argv:
+                return _completed(stdout=_VERSION_BANNER)
+            # Intentionally do NOT write to the -o file.
+            return _completed(stdout=tsv_body)
+
+        emit, _ = _capture_emit()
+        payload = InterProRunPayload(fasta_path="/data/in.fa")
+        with patch("protea_sources.interpro.source.subprocess.run", MagicMock(side_effect=fake_run)):
+            return list(plugin.run(payload, emit=emit))
+
+    def test_file_writer_mock_yields_all_records(self) -> None:
+        """Primary regression: output via -o file is fully parsed."""
+        records = self._run_with_file_writer(_RUN_TSV_BODY)
+        assert len(records) == 2, (
+            f"Expected 2 records from file-based output; got {len(records)}. "
+            "This is the core regression: -o <file> must be read, not stdout."
+        )
+        assert {r.source_db for r in records} == {"Pfam", "Gene3D"}
+
+    def test_file_writer_records_carry_version(self) -> None:
+        records = self._run_with_file_writer(_RUN_TSV_BODY)
+        for record in records:
+            assert record.ipr_release_version == "InterProScan-5.66-98.0"
+
+    def test_stdout_only_mock_yields_zero_records(self) -> None:
+        """Regression baseline: a mock that only emits stdout (no -o file)
+        must produce 0 records, confirming the bug would return empty results
+        if the old stdout-capture path were in place."""
+        records = self._run_with_stdout_only(_RUN_TSV_BODY)
+        assert len(records) == 0, (
+            "Expected 0 records when TSV is only in stdout (not in the -o file). "
+            "This documents the pre-fix baseline where every batch inserted 0 annotations."
+        )

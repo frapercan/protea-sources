@@ -2,9 +2,21 @@
 
 IP.1a delivered the plugin scaffold + the pure-Python TSV parser.
 IP.1b adds the live runner: :meth:`InterProSource.run` invokes
-``interproscan.sh`` via :mod:`subprocess`, captures the stdout TSV,
-threads the ``--version`` tag onto every emitted record, and yields
-parsed :class:`InterProAnnotation` instances.
+``interproscan.sh`` via :mod:`subprocess`, writes the TSV to a
+temp file (``-o <tempfile>``), then reads + parses it.  It threads
+the ``--version`` tag onto every emitted record and yields parsed
+:class:`InterProAnnotation` instances.
+
+Why a temp file instead of stdout (``-o -``):
+
+InterProScan 5.77 does NOT stream TSV to stdout when ``-o -`` is
+given.  The flag is accepted without error, but stdout carries only
+log lines and no data rows.  ``-o <real-file>`` on identical input
+yields the correct TSV (verified: 95 hit rows over 6 proteins).
+Using a :class:`tempfile.NamedTemporaryFile` keeps the fix
+self-contained: the file is created before the subprocess call,
+passed via ``-o``, read after the call, and deleted on context exit
+regardless of success or failure.
 
 Why the runner stays on the plugin (and not in the operation layer):
 
@@ -32,8 +44,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from protea_contracts import AnnotationSource
@@ -97,14 +111,18 @@ def _resolve_binary(payload: InterProRunPayload) -> str:
     return _DEFAULT_BINARY
 
 
-def _build_command(payload: InterProRunPayload, binary: str) -> _CommandSpec:
+def _build_command(
+    payload: InterProRunPayload, binary: str, output_path: str
+) -> _CommandSpec:
     """Assemble the ``interproscan.sh`` argv for one run.
 
-    The canonical triple is ``-i <fasta> -f tsv -o -`` (the dash means
-    write to stdout). ``payload.extra_args`` is appended last so the
-    caller can layer on ``-iprlookup`` / ``-goterms`` / ``-pa`` /
-    ``-appl`` / ``-cpu`` without the plugin needing first-class flags
-    for each.
+    ``output_path`` is a real filesystem path (typically a
+    :class:`tempfile.NamedTemporaryFile` path) passed via ``-o``.
+    InterProScan 5.77 does not stream TSV to stdout when ``-o -`` is
+    used; ``-o <file>`` is the only reliable way to capture data rows.
+    ``payload.extra_args`` is appended last so the caller can layer on
+    ``-iprlookup`` / ``-goterms`` / ``-pa`` / ``-appl`` / ``-cpu``
+    without the plugin needing first-class flags for each.
     """
     argv = (
         binary,
@@ -113,7 +131,7 @@ def _build_command(payload: InterProRunPayload, binary: str) -> _CommandSpec:
         "-f",
         "tsv",
         "-o",
-        "-",
+        output_path,
         *payload.extra_args,
     )
     return _CommandSpec(binary=binary, argv=argv)
@@ -147,8 +165,17 @@ def _capture_version(binary: str) -> str:
     return ""
 
 
-def _run_subprocess(spec: _CommandSpec, timeout_seconds: int) -> str:
-    """Invoke ``interproscan.sh`` and return the captured stdout TSV.
+def _run_subprocess(
+    payload: InterProRunPayload, binary: str, timeout_seconds: int
+) -> str:
+    """Invoke ``interproscan.sh`` and return the TSV content.
+
+    InterProScan 5.77 does NOT write data rows to stdout when ``-o -``
+    is used (only log lines appear).  This function creates a
+    :class:`tempfile.NamedTemporaryFile`, passes its path via ``-o``,
+    runs the subprocess, then reads + returns the file content.  The
+    temp file is removed on context exit regardless of whether the
+    subprocess succeeds or raises.
 
     ``check=True`` so a non-zero exit becomes
     :class:`subprocess.CalledProcessError`; the operation layer's retry
@@ -156,17 +183,22 @@ def _run_subprocess(spec: _CommandSpec, timeout_seconds: int) -> str:
     to :func:`subprocess.run` so a hung child process raises rather than
     blocking the worker forever.
     """
-    try:
-        completed = subprocess.run(
-            list(spec.argv),
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError(f"{_INSTALL_HINT} (tried: {spec.binary!r})") from exc
-    return completed.stdout or ""
+    with tempfile.NamedTemporaryFile(
+        suffix=".tsv", prefix="protea_ips_", delete=True
+    ) as tmp:
+        output_path = tmp.name
+        spec = _build_command(payload, binary, output_path)
+        try:
+            subprocess.run(
+                list(spec.argv),
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"{_INSTALL_HINT} (tried: {spec.binary!r})") from exc
+        return Path(output_path).read_text(encoding="utf-8")
 
 
 class InterProSource(AnnotationSource):
@@ -211,12 +243,15 @@ class InterProSource(AnnotationSource):
         1. Resolve the binary path (payload override → env var → PATH).
         2. Probe ``--version`` so every record carries the release tag
            that produced it (column-12-style provenance).
-        3. Run ``interproscan.sh -i <fasta> -f tsv -o -`` (plus
-           ``payload.extra_args``) under a wall-clock timeout, capture
-           stdout, and parse it through :func:`parse_interproscan_tsv`.
+        3. Run ``interproscan.sh -i <fasta> -f tsv -o <tempfile>`` (plus
+           ``payload.extra_args``) under a wall-clock timeout, read the
+           output file, and parse it through :func:`parse_interproscan_tsv`.
+           ``-o -`` (stdout) is intentionally NOT used: InterProScan 5.77
+           emits only log lines to stdout with that flag and writes 0 data
+           rows, causing every batch to insert 0 annotations silently.
         4. Override each record's ``ipr_release_version`` with the
            ``--version`` value so the field is populated even when the
-           TSV stdout has no ``#``-header.
+           TSV file has no ``#``-header.
 
         ``emit(event, payload, fields, level)`` mirrors the GOA / UniProt
         plugins so ``protea-core`` can stream lifecycle events into the
@@ -230,13 +265,12 @@ class InterProSource(AnnotationSource):
             {"binary": binary, "release_version": release_version},
             "info",
         )
-        spec = _build_command(payload, binary)
-        stdout_tsv = _run_subprocess(spec, payload.timeout_seconds)
+        tsv_content = _run_subprocess(payload, binary, payload.timeout_seconds)
         emit(
             "source.interpro.run_done",
             None,
-            {"binary": binary, "stdout_bytes": len(stdout_tsv)},
+            {"binary": binary, "tsv_bytes": len(tsv_content)},
             "info",
         )
-        for record in parse_interproscan_tsv(stdout_tsv):
+        for record in parse_interproscan_tsv(tsv_content):
             yield record.model_copy(update={"ipr_release_version": release_version})

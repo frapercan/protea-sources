@@ -9,12 +9,14 @@ registers via the `protea.sources` `entry_points` group so that
 [![CI](https://github.com/frapercan/protea-sources/actions/workflows/ci.yml/badge.svg)](https://github.com/frapercan/protea-sources/actions/workflows/ci.yml)
 [![Docs](https://github.com/frapercan/protea-sources/actions/workflows/docs.yml/badge.svg)](https://github.com/frapercan/protea-sources/actions/workflows/docs.yml)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyPI](https://img.shields.io/pypi/v/protea-sources.svg)](https://pypi.org/project/protea-sources/)
 
 **Status:** v0.2.1, production. All four source plugins (GOA, QuickGO,
 UniProt, InterPro) are deployed and used in PROTEA ingestion operations.
 The API may change across minor releases.
 
-**Documentation:** [protea-sources.readthedocs.io](https://protea-sources.readthedocs.io)
+**Documentation:** [frapercan.github.io/protea-sources](https://frapercan.github.io/protea-sources/)
 (overview, the annotation-source contract, one page per source, quickstart, full API reference).
 
 ---

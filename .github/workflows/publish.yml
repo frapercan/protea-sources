@@ -1,0 +1,35 @@
+name: publish
+
+# Release-gated PyPI publish via Trusted Publishing (OIDC). Fires only when
+# a GitHub Release is published, so routine pushes and tags never publish.
+# Prerequisites (one-time, manual, outside this workflow):
+#   1. Reserve the project name "protea-sources" on PyPI.
+#   2. Register this repo + workflow as a PyPI Trusted Publisher
+#      (PyPI project -> Publishing -> add GitHub publisher:
+#       owner frapercan, repo protea-sources, workflow publish.yml,
+#       environment pypi).
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,0 +1,9 @@
+# Docs build dependencies for Read the Docs.
+# Mirrors the Poetry ``docs`` group in pyproject.toml and the Sphinx
+# extensions / theme referenced in docs/source/conf.py. Poetry optional
+# groups are not exposed as pip extras, so Read the Docs installs them
+# from this file (see .readthedocs.yaml -> python.install).
+sphinx>=7.3
+shibuya>=2024.10
+sphinx-copybutton>=0.5
+sphinx-design>=0.5

@@ -52,7 +52,9 @@ Five steps
 5. **Add a docs page** under
    ``docs/source/sources/<your_name>.rst`` following the structure of
    the existing ones (Source, Records, Streaming entry points,
-   Operational notes, ``automodule``). The
+   Operational notes, Temporal cutoff). Keep the page narrative and let
+   it link to the generated :doc:`API reference </reference/index>`;
+   autodoc is collected there, not embedded per page. The
    ``docs/source/sources/index.rst`` ``toctree`` picks the page up
    automatically once committed.
 

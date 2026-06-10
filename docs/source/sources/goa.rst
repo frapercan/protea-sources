@@ -28,13 +28,8 @@ Temporal cutoff
 Each record carries ``annotation_date`` (GAF column 14). The plugin is
 cutoff-agnostic: it yields every annotation verbatim, and the consuming
 operation keeps only those dated at or before the reference timepoint
-``t0`` so no future evidence leaks into the reference pool. See
-:ref:`the contract page <temporal-cutoff>` for the full rule.
+``t0`` so no future evidence leaks into the reference pool. See the
+:ref:`temporal-cutoff rule <temporal-cutoff>` for the full statement.
 
-API reference
--------------
-
-.. automodule:: protea_sources.goa
-   :members:
-   :show-inheritance:
-   :member-order: bysource
+The generated module reference is in the :doc:`API reference
+</reference/index>`.

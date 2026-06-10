@@ -17,7 +17,7 @@ UniProt, InterPro) are deployed and used in PROTEA ingestion operations.
 The API may change across minor releases.
 
 **Documentation:** [protea-sources.readthedocs.io](https://protea-sources.readthedocs.io)
-(overview, the annotation-source contract, one page per source, quickstart, full API reference).
+(concepts and the annotation-source contract, quickstart, one page per source, full API reference).
 
 ---
 

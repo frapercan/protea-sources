@@ -13,3 +13,4 @@ parsing).
    quickgo
    uniprot
    interpro
+   go-mapping

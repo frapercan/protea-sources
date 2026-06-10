@@ -13,13 +13,17 @@ Persistence (FK-safe upsert against ``Protein`` + ``Sequence`` tables)
 stays in PROTEA's :class:`InsertProteinsOperation` which consumes the
 record stream.
 
-The plugin currently exposes:
+The plugin exposes two modality-specific stream methods:
 
-* :meth:`UniProtSource.stream_fasta` — yields
+* :meth:`UniProtSource.stream_fasta` yields
   :class:`UniProtProteinRecord` instances over UniProt FASTA pages.
-* :meth:`UniProtSource.fetch_metadata` is reserved for F2A.6-real
-  step 4 (UniProt metadata migration); ``stream`` and ``load`` remain
-  as deprecation shells until the ABC cleanup (D-MIGR-06).
+* :meth:`UniProtSource.stream_metadata` yields
+  :class:`UniProtMetadataRecord` instances over UniProt TSV pages
+  (F2A.6-real step 4, UniProt metadata migration).
+
+The generic :meth:`UniProtSource.stream` redirect raises
+``NotImplementedError`` pointing callers at the specific method,
+because UniProt has no single stream modality (unlike goa / quickgo).
 """
 
 from __future__ import annotations

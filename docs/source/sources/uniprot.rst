@@ -3,15 +3,15 @@ UniProt (``uniprot``)
 
 The ``uniprot`` plugin consumes the UniProt REST API for two
 distinct workloads: streaming protein sequences (FASTA) and
-fetching functional metadata (TSV).
+streaming functional metadata (TSV).
 
 :Source: UniProt REST API (FASTA + TSV, cursor pagination).
 :Records: :class:`protea_contracts.UniProtProteinRecord`
           (FASTA stream),
           :class:`protea_contracts.UniProtMetadataRecord`
-          (TSV stream, F2A.6-real step 4 in progress).
+          (TSV stream).
 :Streaming entry points: ``UniProtSource.stream_fasta``,
-                         ``UniProtSource.fetch_metadata``.
+                         ``UniProtSource.stream_metadata``.
 
 Operational notes
 -----------------
@@ -22,10 +22,11 @@ Operational notes
   here so any future UniProt workload (e.g. xrefs) reuses the same
   retry policy.
 - **FASTA header parsing**. The plugin parses ``OS=`` (organism),
-  ``OX=`` (NCBI taxon ID), ``GN=`` (gene name) and ``PE=`` (existence
-  evidence level) markers from the FASTA header line. Isoform
-  accessions of the form ``P12345-2`` are recognised; the
-  ``canonical_accession`` field collapses them back to ``P12345``.
+  ``OX=`` (NCBI taxon ID) and ``GN=`` (gene name) markers from the
+  FASTA header line, plus the ``sp|``/``tr|`` prefix that sets the
+  ``reviewed`` flag. Isoform accessions of the form ``P12345-2`` are
+  recognised; the ``canonical_accession`` field collapses them back to
+  ``P12345``.
 - **Sequence hash**. Each yielded record carries a precomputed
   ``sequence_hash`` (MD5) so the consuming operation can deduplicate
   before bulk insert. The helper lives in
@@ -34,8 +35,16 @@ Operational notes
   ``Link`` HTTP header; ``_http.py`` extracts it via regex.
 - **Coverage**: 100 % on ``uniprot/__init__``, 93 % on
   ``uniprot/_http``.
-- **F2A.6-real step 4**: the ``fetch_metadata`` half is in progress;
-  the FASTA half landed in turn 32 of master plan v3.
+
+Temporal cutoff
+---------------
+
+Unlike GOA and QuickGO, UniProt records have no per-annotation date:
+sequences and metadata are versioned by UniProt **release**. Provenance
+travels via the source ``version`` attribute (e.g.
+``"uniprot-rest"``), which the consuming operation stamps onto the
+``AnnotationSet`` so a prediction set traces back to the exact release.
+See :ref:`the contract page <temporal-cutoff>`.
 
 API reference
 -------------

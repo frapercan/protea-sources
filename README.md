@@ -6,13 +6,16 @@ Each sub-module implements the `AnnotationSource` ABC from
 registers via the `protea.sources` `entry_points` group so that
 `protea-core` discovers it at startup without any code changes.
 
-[![Lint](https://github.com/frapercan/protea-sources/actions/workflows/lint.yml/badge.svg)](https://github.com/frapercan/protea-sources/actions/workflows/lint.yml)
-[![Tests](https://github.com/frapercan/protea-sources/actions/workflows/test.yml/badge.svg)](https://github.com/frapercan/protea-sources/actions/workflows/test.yml)
+[![CI](https://github.com/frapercan/protea-sources/actions/workflows/ci.yml/badge.svg)](https://github.com/frapercan/protea-sources/actions/workflows/ci.yml)
+[![Docs](https://github.com/frapercan/protea-sources/actions/workflows/docs.yml/badge.svg)](https://github.com/frapercan/protea-sources/actions/workflows/docs.yml)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 
-**Status:** v0.0.1, production. All four source plugins (GOA, QuickGO,
+**Status:** v0.2.1, production. All four source plugins (GOA, QuickGO,
 UniProt, InterPro) are deployed and used in PROTEA ingestion operations.
 The API may change across minor releases.
+
+**Documentation:** [protea-sources.readthedocs.io](https://protea-sources.readthedocs.io)
+(overview, the annotation-source contract, one page per source, quickstart, full API reference).
 
 ---
 
@@ -99,20 +102,22 @@ for record in goa.stream(payload, emit=emit):
 QuickGO (TSV with optional ECO mapping):
 
 ```python
-from protea_contracts import QuickGoStreamPayload
+from protea_contracts import EcoMappingPayload, QuickGoStreamPayload
 from protea_sources.quickgo import plugin as quickgo
 
-eco_map = quickgo.fetch_eco_mapping(eco_url="https://example.com/eco.obo")
-for record in quickgo.stream(QuickGoStreamPayload(...), emit=emit):
+eco_map = quickgo.fetch_eco_mapping(
+    EcoMappingPayload(url="https://example.com/gaf-eco.txt"), emit=emit
+)
+for record in quickgo.stream(QuickGoStreamPayload(), emit=emit):
     code = eco_map.get(record.eco_id, record.eco_id)
 ```
 
 InterProScan via local subprocess:
 
 ```python
-from protea_sources.interpro import plugin as interpro, InterProRunPayload
+from protea_sources.interpro import InterProRunPayload, plugin as interpro
 
-payload = InterProRunPayload(fasta_path="/data/proteins.fasta", timeout=3600)
+payload = InterProRunPayload(fasta_path="/data/proteins.fasta", timeout_seconds=3600)
 for annotation in interpro.run(payload, emit=emit):
     print(annotation.accession, annotation.source_db, annotation.start, annotation.end)
 ```

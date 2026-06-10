@@ -59,29 +59,19 @@ literal ``"-"`` tokens which the parser normalises to ``None``.
 - IP.2: ORM model ``interpro_annotation`` in PROTEA core.
 - IP.3: ``run_interproscan_batch`` operation wiring this into the job queue.
 
+Temporal cutoff
+~~~~~~~~~~~~~~~
+
+InterProScan annotations carry no per-row date. Provenance travels via
+``ipr_release_version`` (the ``InterProScan-5.x-xx.0`` tag), threaded
+onto every record from the ``#`` comment header or the
+``interproscan.sh --version`` probe, so a re-index against a newer
+release stays distinguishable downstream. See the :ref:`temporal-cutoff
+rule <temporal-cutoff>`.
+
 API reference
 ~~~~~~~~~~~~~
 
-.. automodule:: protea_sources.interpro
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :member-order: bysource
-
-.. automodule:: protea_sources.interpro.parser
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :member-order: bysource
-
-.. automodule:: protea_sources.interpro.payload
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :member-order: bysource
-
-.. automodule:: protea_sources.interpro.source
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :member-order: bysource
+The generated module reference (``interpro.parser``,
+``interpro.payload``, ``interpro.source``) is in the :doc:`API reference
+</reference/index>`.

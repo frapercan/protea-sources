@@ -1,11 +1,9 @@
 API reference
 =============
 
-Full autodoc of every public module in ``protea-sources``. Each source
-page (:doc:`goa <sources/goa>`, :doc:`quickgo <sources/quickgo>`,
-:doc:`uniprot <sources/uniprot>`, :doc:`interpro <sources/interpro>`)
-embeds the same module reference next to its operational notes; this
-page collects them in one place.
+Full autodoc of every public module in ``protea-sources``. The
+narrative lives in :doc:`/overview` and the per-source pages under
+:doc:`/sources/index`; this section is the generated module reference.
 
 Package
 -------
@@ -13,7 +11,6 @@ Package
 .. automodule:: protea_sources
    :members:
    :show-inheritance:
-   :no-index:
 
 GOA
 ---
@@ -21,7 +18,6 @@ GOA
 .. automodule:: protea_sources.goa
    :members:
    :show-inheritance:
-   :no-index:
    :member-order: bysource
 
 QuickGO
@@ -30,7 +26,6 @@ QuickGO
 .. automodule:: protea_sources.quickgo
    :members:
    :show-inheritance:
-   :no-index:
    :member-order: bysource
 
 UniProt
@@ -39,7 +34,6 @@ UniProt
 .. automodule:: protea_sources.uniprot
    :members:
    :show-inheritance:
-   :no-index:
    :member-order: bysource
 
 InterPro
@@ -49,26 +43,22 @@ InterPro
    :members:
    :undoc-members:
    :show-inheritance:
-   :no-index:
    :member-order: bysource
 
 .. automodule:: protea_sources.interpro.parser
    :members:
    :undoc-members:
    :show-inheritance:
-   :no-index:
    :member-order: bysource
 
 .. automodule:: protea_sources.interpro.payload
    :members:
    :undoc-members:
    :show-inheritance:
-   :no-index:
    :member-order: bysource
 
 .. automodule:: protea_sources.interpro.source
    :members:
    :undoc-members:
    :show-inheritance:
-   :no-index:
    :member-order: bysource

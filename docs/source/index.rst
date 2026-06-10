@@ -1,21 +1,30 @@
 protea-sources
 ==============
 
-Annotation source plugins for the PROTEA stack. Each sub-module
-implements the :class:`protea_contracts.AnnotationSource` ABC and
-registers via the ``protea.sources`` ``entry_points`` group.
+``protea-sources`` is the annotation-ingestion layer of the PROTEA
+stack. It holds the plugins that talk to the upstream biological
+databases (UniProt-GOA, QuickGO, UniProt, InterProScan), download a
+release, parse it, and yield typed records. Persistence (filtering,
+GO-term resolution, bulk insert) stays in the ``protea-core``
+operations that consume those record streams; a plugin never opens a
+database session.
 
-A source plugin is responsible for the network and parsing side of
-ingestion: downloading the upstream release (GAF, TSV, FASTA, etc.),
-streaming records, and yielding typed pydantic objects from
-``protea-contracts``. Persistence (DB filtering, GO-term resolution,
-bulk insert) stays in ``protea-core`` operations
-(``LoadGOAAnnotationsOperation``, ``LoadQuickGOAnnotationsOperation``,
-``InsertProteinsOperation``, ``FetchUniProtMetadataOperation``) which
-consume the record streams.
+The problem it solves
+---------------------
 
-At a glance
------------
+PROTEA ingests annotations from several sources that agree on almost
+nothing: a multi-million-line GAF dump over HTTP, a cursor-paginated
+REST API, a FASTA stream, and a local subprocess that shells out to
+``interproscan.sh``. Two things have to stay constant across all of
+them. First, the platform should learn about a new source without any
+code change, so sources are **plugins discovered via entry points**.
+Second, evaluation has to be leakage-free, so every source has to
+expose its records with **consistent temporal semantics** (a date or a
+release tag the downstream cutoff can act on). ``protea-sources`` is
+the package that makes both true.
+
+What lives here
+---------------
 
 .. list-table::
    :header-rows: 1
@@ -23,67 +32,39 @@ At a glance
 
    * - Plugin
      - Source
-     - Status
+     - Modality
      - Notes
    * - :doc:`goa <sources/goa>`
-     - UniProt-GOA bulk GAF
-     - Real (F2A.6-real pre-25)
-     - HTTP + gzip + GAF 2.x parser; 100 % coverage.
+     - UniProt-GOA bulk GAF (EBI)
+     - GAF 2.x over HTTP + gzip
+     - Streaming GAF parser; ``annotation_date`` per row.
    * - :doc:`quickgo <sources/quickgo>`
-     - QuickGO REST API
-     - Real (F2A.6-real turn 27)
-     - Cursor-based TSV streaming + ECO mapping; 100 % coverage.
+     - QuickGO REST API (EBI)
+     - TSV, cursor pagination
+     - Batched queries + optional ECO evidence-code mapping.
    * - :doc:`uniprot <sources/uniprot>`
      - UniProt REST API
-     - FASTA stream active; metadata active
-     - Cursor-based FASTA + isoform parsing + private retry/backoff
-       client (``_http.py``).
+     - FASTA + metadata TSV
+     - Cursor pagination + private retry/backoff client.
    * - :doc:`interpro <sources/interpro>`
-     - InterProScan subprocess / TSV
-     - Active (IP.1a + IP.1b)
-     - Local subprocess runner + pure TSV parser; 100 % coverage on
-       parser + payload; 90 %+ on source.
+     - InterProScan (local subprocess)
+     - TSV per domain hit
+     - Subprocess runner + pure TSV parser; per-record release tag.
 
-Install
--------
+Every plugin subclasses :class:`protea_contracts.AnnotationSource`,
+registers under the ``protea.sources`` entry-points group, and yields
+frozen pydantic records from ``protea-contracts``. The
+:doc:`overview` page explains that contract and the temporal-cutoff
+rule; the :doc:`quickstart` runs a minimal load from each source.
 
-.. code-block:: bash
-
-   pip install protea-sources
-
-The package has no per-source extras: the upstream protocols
-(HTTP + gzip / TSV / FASTA) are covered by ``requests`` alone, which
-is a hard runtime dependency.
-
-Discovery
----------
-
-``protea-core`` resolves a source by name through
-``importlib.metadata.entry_points``::
-
-    from importlib.metadata import entry_points
-    plugin = entry_points(group="protea.sources")["goa"].load()
-
-Operational role
-----------------
-
-Each plugin exposes a streaming method that yields typed records.
-The platform operation that consumes the stream (e.g.
-``LoadGOAAnnotationsOperation``) handles per-page commits, filtering
-against canonical accessions already in the database, GO-term
-resolution against the active ``OntologySnapshot``, and structured
-event emission. Plugin events follow the ``source.<name>.*`` naming
-convention; operation events keep their existing names.
-
-Contents
---------
+Reading order
+-------------
 
 .. toctree::
    :maxdepth: 2
 
    overview
    quickstart
-   contract
    sources/index
-   api
+   reference/index
    contributing

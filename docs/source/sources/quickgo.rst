@@ -36,13 +36,8 @@ Each record carries ``annotation_date`` (the QuickGO ``DATE`` column)
 and a raw ``eco_id``. The plugin yields every annotation verbatim; the
 consuming operation maps the ECO id to an evidence code (see
 :doc:`go-mapping`) and keeps only annotations dated at or before the
-reference timepoint ``t0``. See :ref:`the contract page
-<temporal-cutoff>` for the full rule.
+reference timepoint ``t0``. See the :ref:`temporal-cutoff rule
+<temporal-cutoff>` for the full statement.
 
-API reference
--------------
-
-.. automodule:: protea_sources.quickgo
-   :members:
-   :show-inheritance:
-   :member-order: bysource
+The generated module reference is in the :doc:`API reference
+</reference/index>`.

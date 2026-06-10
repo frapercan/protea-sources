@@ -64,7 +64,7 @@ Temporal cutoff
 ---------------
 
 Evidence codes participate in the temporal-cutoff filter described in
-:ref:`the contract page <temporal-cutoff>`: the reference pool keeps
+the :ref:`temporal-cutoff rule <temporal-cutoff>`: the reference pool keeps
 only annotations dated at or before the reference timepoint ``t0``, and
 electronic (``IEA``) versus experimental evidence is a downstream
 policy choice. The plugins expose ``annotation_date`` and the raw

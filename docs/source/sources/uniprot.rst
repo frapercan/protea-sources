@@ -44,12 +44,7 @@ sequences and metadata are versioned by UniProt **release**. Provenance
 travels via the source ``version`` attribute (e.g.
 ``"uniprot-rest"``), which the consuming operation stamps onto the
 ``AnnotationSet`` so a prediction set traces back to the exact release.
-See :ref:`the contract page <temporal-cutoff>`.
+See the :ref:`temporal-cutoff rule <temporal-cutoff>`.
 
-API reference
--------------
-
-.. automodule:: protea_sources.uniprot
-   :members:
-   :show-inheritance:
-   :member-order: bysource
+The generated module reference is in the :doc:`API reference
+</reference/index>`.

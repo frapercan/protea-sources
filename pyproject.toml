@@ -7,13 +7,13 @@ name = "protea-sources"
 version = "0.2.1"
 description = "Annotation source plugins for the PROTEA stack: GOA, QuickGO, UniProt, InterProScan."
 authors = ["Francisco Miguel Pérez Canales <frapercan1@gmail.com>"]
-license = "MIT"
+license = "Unlicense"
 readme = "README.md"
 packages = [{ include = "protea_sources", from = "src" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: The Unlicense (Unlicense)",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Bio-Informatics",

@@ -34,7 +34,7 @@ Two API divergences from GoaSource:
 from __future__ import annotations
 
 import io
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 import requests
@@ -83,17 +83,20 @@ def parse_quickgo_row(
     )
 
 
-def parse_quickgo_tsv(text: str) -> Iterator[QuickGoAnnotationRecord]:
-    """Parse a QuickGO TSV string into a record iterator.
+def iter_quickgo_records(lines: Iterable[str]) -> Iterator[QuickGoAnnotationRecord]:
+    """Parse QuickGO TSV lines into a record iterator.
 
     The first non-empty line is the header (column names verbatim
-    from QuickGO). Subsequent lines are zipped against it; rows with
-    fewer columns than the header are skipped silently. Useful for
-    offline tests; production paths go through
-    :meth:`QuickGoSource.stream`.
+    from QuickGO); subsequent lines are zipped against it. Blank lines
+    and rows with fewer columns than the header are skipped silently.
+
+    Shared by the offline :func:`parse_quickgo_tsv` (which splits an
+    in-memory blob) and the live :meth:`QuickGoSource._fetch_page`
+    (which streams an HTTP body) so the header/row contract lives in
+    one place.
     """
     header: list[str] | None = None
-    for raw in text.splitlines():
+    for raw in lines:
         line = raw.rstrip("\n")
         if not line:
             continue
@@ -106,6 +109,16 @@ def parse_quickgo_tsv(text: str) -> Iterator[QuickGoAnnotationRecord]:
         record = parse_quickgo_row(dict(zip(header, parts, strict=False)))
         if record is not None:
             yield record
+
+
+def parse_quickgo_tsv(text: str) -> Iterator[QuickGoAnnotationRecord]:
+    """Parse a QuickGO TSV string into a record iterator.
+
+    Thin wrapper over :func:`iter_quickgo_records` for offline tests
+    and small-batch tooling; production paths go through
+    :meth:`QuickGoSource.stream`.
+    """
+    yield from iter_quickgo_records(text.splitlines())
 
 
 def parse_eco_mapping(text: str) -> dict[str, str]:
@@ -208,21 +221,8 @@ class QuickGoSource(AnnotationSource):
         resp.raw.decode_content = True
         text_stream = _open_tsv_text_stream(resp.raw)
 
-        header: list[str] | None = None
         with text_stream:
-            for raw in text_stream:
-                line = raw.rstrip("\n")
-                if not line:
-                    continue
-                parts = line.split("\t")
-                if header is None:
-                    header = parts
-                    continue
-                if len(parts) < len(header):
-                    continue
-                record = parse_quickgo_row(dict(zip(header, parts, strict=False)))
-                if record is not None:
-                    yield record
+            yield from iter_quickgo_records(text_stream)
 
     def fetch_eco_mapping(
         self,

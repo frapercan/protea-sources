@@ -81,5 +81,9 @@ Contents
 .. toctree::
    :maxdepth: 2
 
+   overview
+   quickstart
+   contract
    sources/index
+   api
    contributing

@@ -22,6 +22,15 @@ Operational notes
   in memory.
 - **Coverage**: 100 % (``protea-sources`` package CI).
 
+Temporal cutoff
+---------------
+
+Each record carries ``annotation_date`` (GAF column 14). The plugin is
+cutoff-agnostic: it yields every annotation verbatim, and the consuming
+operation keeps only those dated at or before the reference timepoint
+``t0`` so no future evidence leaks into the reference pool. See
+:ref:`the contract page <temporal-cutoff>` for the full rule.
+
 API reference
 -------------
 

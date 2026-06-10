@@ -29,6 +29,16 @@ Operational notes
   ``load_quickgo_annotations.*`` events on top.
 - **Coverage**: 100 % (``protea-sources`` package CI).
 
+Temporal cutoff
+---------------
+
+Each record carries ``annotation_date`` (the QuickGO ``DATE`` column)
+and a raw ``eco_id``. The plugin yields every annotation verbatim; the
+consuming operation maps the ECO id to an evidence code (see
+:doc:`go-mapping`) and keeps only annotations dated at or before the
+reference timepoint ``t0``. See :ref:`the contract page
+<temporal-cutoff>` for the full rule.
+
 API reference
 -------------
 

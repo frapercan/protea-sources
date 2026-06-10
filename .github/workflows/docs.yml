@@ -16,14 +16,11 @@ on:
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
-# Least-privilege defaults; the deploy job widens scope locally.
+# Documentation is published by Read the Docs (slug: protea-sources). This
+# workflow is a quality gate only: it builds the Sphinx docs with warnings
+# promoted to errors so broken docs fail the PR before the RTD build runs.
 permissions:
   contents: read
-
-# Allow one concurrent deployment, cancelling in-progress runs.
-concurrency:
-  group: pages
-  cancel-in-progress: true
 
 jobs:
   build:
@@ -40,23 +37,3 @@ jobs:
         run: poetry install --with docs
       - name: Build HTML (warnings are errors)
         run: poetry run sphinx-build -b html -W --keep-going docs/source docs/build/html
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs/build/html
-
-  deploy:
-    # Publish only from the trunk branches, never from pull requests.
-    if: github.event_name != 'pull_request'
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4

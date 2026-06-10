@@ -9,7 +9,7 @@ registers via the `protea.sources` `entry_points` group so that
 [![CI](https://github.com/frapercan/protea-sources/actions/workflows/ci.yml/badge.svg)](https://github.com/frapercan/protea-sources/actions/workflows/ci.yml)
 [![Documentation](https://img.shields.io/readthedocs/protea-sources.svg)](https://protea-sources.readthedocs.io)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](https://unlicense.org/)
 [![PyPI](https://img.shields.io/pypi/v/protea-sources.svg)](https://pypi.org/project/protea-sources/)
 
 **Status:** v0.2.1, production. All four source plugins (GOA, QuickGO,
@@ -243,4 +243,5 @@ The full guide is in `docs/source/contributing.rst`.
 
 ## License
 
-MIT. See `LICENSE`.
+Released into the public domain under [The Unlicense](https://unlicense.org/).
+See `LICENSE`.

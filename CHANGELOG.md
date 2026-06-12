@@ -12,6 +12,16 @@ whose version bump drives downstream rebuilds.
 
 ### Added
 
+- InterPro GO emission (`protea_sources.interpro.interpro2go`): the
+  `interpro` plugin now turns InterProScan domain hits into
+  `(protein, go_id, score)` GO predictions. Each hit's interpro2go GO
+  terms (TSV column 14, captured into `InterProAnnotation.go_terms`) are
+  asserted at a flat operating-point score and true-path-propagated up
+  the ontology (`is_a` + `part_of`), with the maximum score winning per
+  GO id. `InterProSource.predict_go` orchestrates the mapping;
+  `load_obo_ancestors` builds the ancestor lookup from a GO OBO. The
+  interpro2go release is pinned in `INTERPRO2GO_RELEASE` (overridable via
+  `PROTEA_INTERPRO2GO_RELEASE`) and stamped onto every prediction.
 - Sphinx documentation site expanded into a full guide: overview,
   quickstart, the annotation-source contract (including temporal-cutoff
   semantics), a GO and evidence-code mapping page, and an aggregated API

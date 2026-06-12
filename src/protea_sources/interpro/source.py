@@ -45,13 +45,19 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from protea_contracts import AnnotationSource
 
+from protea_sources.interpro.interpro2go import (
+    INTERPRO2GO_RELEASE,
+    AncestorLookup,
+    InterProGOPrediction,
+    propagate_go_predictions,
+)
 from protea_sources.interpro.parser import (
     InterProAnnotation,
     parse_interproscan_tsv,
@@ -274,3 +280,44 @@ class InterProSource(AnnotationSource):
         )
         for record in parse_interproscan_tsv(tsv_content):
             yield record.model_copy(update={"ipr_release_version": release_version})
+
+    def predict_go(
+        self,
+        annotations: Iterable[InterProAnnotation],
+        *,
+        ancestors: AncestorLookup,
+        emit: Any,
+    ) -> Iterator[InterProGOPrediction]:
+        """Turn InterPro domain hits into ``(protein, go_id, score)`` GO predictions.
+
+        Maps each hit's interpro2go GO terms
+        (:attr:`InterProAnnotation.go_terms`, column 14) to a flat
+        operating-point score and true-path-propagates every term up the
+        ontology via ``ancestors`` (build it with
+        :func:`~protea_sources.interpro.interpro2go.load_obo_ancestors`).
+        When the same GO id is reached more than once the maximum score
+        wins; root terms are dropped. Each yielded
+        :class:`InterProGOPrediction` carries the pinned
+        :data:`INTERPRO2GO_RELEASE` for provenance.
+
+        ``emit(event, payload, fields, level)`` mirrors :meth:`run` so
+        ``protea-core`` can stream lifecycle events without coupling to a
+        logger. The ``predict_go_done`` event reports the prediction
+        count once the consumer has drained the generator.
+        """
+        emit(
+            "source.interpro.predict_go_start",
+            None,
+            {"interpro2go_release": INTERPRO2GO_RELEASE},
+            "info",
+        )
+        count = 0
+        for prediction in propagate_go_predictions(annotations, ancestors=ancestors):
+            count += 1
+            yield prediction
+        emit(
+            "source.interpro.predict_go_done",
+            None,
+            {"predictions": count, "interpro2go_release": INTERPRO2GO_RELEASE},
+            "info",
+        )

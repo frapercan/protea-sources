@@ -42,6 +42,7 @@ _IDX_START = 6
 _IDX_END = 7
 _IDX_SCORE = 8
 _IDX_IPR_ACCESSION = 11
+_IDX_GO_TERMS = 13
 
 # Columns 1..11 are always present; columns 12..15 are optional.
 _MIN_COLUMNS = 11
@@ -101,6 +102,17 @@ class InterProAnnotation(BaseModel):
     present; otherwise supplied by the caller (the IP.1b CLI runner
     will pass it from ``interproscan.sh --version``)."""
 
+    go_terms: tuple[str, ...] = ()
+    """TSV column 14 (GO annotations): the GO terms InterProScan mapped
+    onto this signature via its bundled interpro2go release (only
+    populated when InterProScan is invoked with ``-goterms``). Each
+    token is normalised to a bare ``GO:nnnnnnn`` id (any ``(InterPro)``
+    /``(PANTHER)`` provenance suffix is stripped). Empty tuple when the
+    row carried no GO mapping (column absent, empty, or ``"-"``). These
+    terms are the raw interpro2go assertions the GO-emission step
+    (:mod:`protea_sources.interpro.interpro2go`) aggregates and
+    true-path-propagates into ``(protein, go_id, score)`` predictions."""
+
 
 def _normalise_optional(cell: str) -> str | None:
     """Map empty / ``"-"`` placeholder cells to ``None``.
@@ -111,6 +123,31 @@ def _normalise_optional(cell: str) -> str | None:
     """
     stripped = cell.strip()
     return None if stripped in _NULL_TOKENS else stripped
+
+
+def extract_go_terms(go_field: str | None) -> tuple[str, ...]:
+    """Extract bare ``GO:nnnnnnn`` ids from an InterProScan GO cell.
+
+    InterProScan's GO column (column 14, written with ``-goterms``)
+    packs one or more GO ids separated by ``|`` (older releases use
+    ``,``) and may suffix each id with a provenance tag such as
+    ``GO:0005524(InterPro)`` or ``GO:0004672(PANTHER)``. This helper
+    splits on either delimiter, keeps only ``GO:``-prefixed tokens, and
+    trims each to its 10-character canonical id (``GO:`` + 7 digits),
+    discarding any suffix. Empty / ``"-"`` / ``"None"`` cells yield an
+    empty tuple.
+    """
+    if go_field is None:
+        return ()
+    stripped = go_field.strip()
+    if stripped in _NULL_TOKENS or stripped == "None":
+        return ()
+    out: list[str] = []
+    for token in stripped.replace(",", "|").split("|"):
+        candidate = token.strip()
+        if candidate.startswith("GO:"):
+            out.append(candidate[:10])
+    return tuple(out)
 
 
 def parse_release_version_header(line: str) -> str | None:
@@ -165,6 +202,9 @@ def parse_interproscan_tsv_line(
     ipr_accession: str | None = None
     if len(parts) > _IDX_IPR_ACCESSION:
         ipr_accession = _normalise_optional(parts[_IDX_IPR_ACCESSION])
+    go_terms: tuple[str, ...] = ()
+    if len(parts) > _IDX_GO_TERMS:
+        go_terms = extract_go_terms(parts[_IDX_GO_TERMS])
     return InterProAnnotation(
         source_db=parts[_IDX_ANALYSIS],
         accession=parts[_IDX_ACCESSION],
@@ -173,6 +213,7 @@ def parse_interproscan_tsv_line(
         evidence=_normalise_optional(parts[_IDX_SCORE]),
         ipr_version=ipr_accession,
         ipr_release_version=release_version,
+        go_terms=go_terms,
     )
 
 

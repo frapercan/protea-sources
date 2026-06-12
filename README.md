@@ -119,9 +119,27 @@ InterProScan via local subprocess:
 ```python
 from protea_sources.interpro import InterProRunPayload, plugin as interpro
 
-payload = InterProRunPayload(fasta_path="/data/proteins.fasta", timeout_seconds=3600)
+# Pass -goterms so InterProScan fills the GO column (column 14) via interpro2go.
+payload = InterProRunPayload(
+    fasta_path="/data/proteins.fasta",
+    extra_args=["-iprlookup", "-goterms"],
+    timeout_seconds=3600,
+)
 for annotation in interpro.run(payload, emit=emit):
     print(annotation.accession, annotation.source_db, annotation.start, annotation.end)
+```
+
+The same plugin emits `(protein, go_id, score)` GO predictions by
+mapping each hit's interpro2go GO terms and true-path-propagating them
+up the ontology:
+
+```python
+from protea_sources.interpro import load_obo_ancestors, plugin as interpro
+
+annotations = list(interpro.run(payload, emit=emit))
+ancestors, _ = load_obo_ancestors("/data/go-basic.obo")
+for pred in interpro.predict_go(annotations, ancestors=ancestors, emit=emit):
+    print(pred.accession, pred.go_id, pred.score, pred.interpro2go_release)
 ```
 
 Records are frozen pydantic models from `protea-contracts`: typos fail

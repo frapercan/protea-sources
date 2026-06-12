@@ -50,8 +50,17 @@ https://interproscan-docs.readthedocs.io/en/latest/OutputFormats.html#tab-separa
 
 from __future__ import annotations
 
+from protea_sources.interpro.interpro2go import (
+    ENV_INTERPRO2GO_RELEASE,
+    GO_ROOTS,
+    INTERPRO2GO_RELEASE,
+    InterProGOPrediction,
+    load_obo_ancestors,
+    propagate_go_predictions,
+)
 from protea_sources.interpro.parser import (
     InterProAnnotation,
+    extract_go_terms,
     parse_interproscan_tsv,
     parse_interproscan_tsv_line,
     parse_release_version_header,
@@ -66,11 +75,18 @@ plugin = InterProSource()
 
 __all__ = [
     "ENV_BINARY_PATH",
+    "ENV_INTERPRO2GO_RELEASE",
+    "GO_ROOTS",
+    "INTERPRO2GO_RELEASE",
     "InterProAnnotation",
+    "InterProGOPrediction",
     "InterProRunPayload",
     "InterProSource",
+    "extract_go_terms",
+    "load_obo_ancestors",
     "parse_interproscan_tsv",
     "parse_interproscan_tsv_line",
     "parse_release_version_header",
     "plugin",
+    "propagate_go_predictions",
 ]

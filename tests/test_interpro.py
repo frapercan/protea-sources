@@ -33,13 +33,19 @@ from pydantic import ValidationError
 
 from protea_sources.interpro import (
     ENV_BINARY_PATH,
+    GO_ROOTS,
+    INTERPRO2GO_RELEASE,
     InterProAnnotation,
+    InterProGOPrediction,
     InterProRunPayload,
     InterProSource,
+    extract_go_terms,
+    load_obo_ancestors,
     parse_interproscan_tsv,
     parse_interproscan_tsv_line,
     parse_release_version_header,
     plugin,
+    propagate_go_predictions,
 )
 
 # -- Fixtures -------------------------------------------------------------
@@ -147,6 +153,7 @@ class TestParseInterproscanTsvLine:
             evidence="7.9E-43",
             ipr_version="IPR015187",
             ipr_release_version="InterProScan-5.66-98.0",
+            go_terms=("GO:0006281",),
         )
 
     def test_dash_in_ipr_accession_becomes_none(self) -> None:
@@ -616,3 +623,277 @@ class TestInterProFileCapture:
             "Expected 0 records when TSV is only in stdout (not in the -o file). "
             "This documents the pre-fix baseline where every batch inserted 0 annotations."
         )
+
+
+# -- S2: interpro2go GO-term extraction -----------------------------------
+
+
+class TestExtractGoTerms:
+    def test_single_term(self) -> None:
+        assert extract_go_terms("GO:0006281") == ("GO:0006281",)
+
+    def test_pipe_separated_terms(self) -> None:
+        assert extract_go_terms("GO:0005524|GO:0004672") == (
+            "GO:0005524",
+            "GO:0004672",
+        )
+
+    def test_comma_separated_terms(self) -> None:
+        assert extract_go_terms("GO:0005524,GO:0004672") == (
+            "GO:0005524",
+            "GO:0004672",
+        )
+
+    def test_provenance_suffix_stripped(self) -> None:
+        assert extract_go_terms("GO:0005524(InterPro)|GO:0004672(PANTHER)") == (
+            "GO:0005524",
+            "GO:0004672",
+        )
+
+    def test_null_tokens_yield_empty(self) -> None:
+        assert extract_go_terms("-") == ()
+        assert extract_go_terms("") == ()
+        assert extract_go_terms("None") == ()
+        assert extract_go_terms(None) == ()
+
+    def test_parser_captures_column_14(self) -> None:
+        record = parse_interproscan_tsv_line(_PFAM_ROW)
+        assert record is not None
+        assert record.go_terms == ("GO:0006281",)
+
+    def test_parser_no_go_column_yields_empty_tuple(self) -> None:
+        record = parse_interproscan_tsv_line(_GENE3D_ROW)
+        assert record is not None
+        assert record.go_terms == ()
+
+
+# -- S2: OBO ancestor loading ---------------------------------------------
+
+
+# Tiny synthetic OBO: a 3-level chain plus a part_of edge, an obsolete
+# term, and the BP root. Mirrors the shapes the real go-basic.obo uses
+# (is_a, relationship: part_of, is_obsolete) without staging the 40 MB
+# release file.
+_TINY_OBO = """\
+format-version: 1.2
+
+[Term]
+id: GO:0008150
+name: biological_process
+namespace: biological_process
+
+[Term]
+id: GO:0000001
+name: mid level
+namespace: biological_process
+is_a: GO:0008150 ! biological_process
+
+[Term]
+id: GO:0000002
+name: leaf term
+namespace: biological_process
+is_a: GO:0000001 ! mid level
+
+[Term]
+id: GO:0000003
+name: part-of term
+namespace: biological_process
+relationship: part_of GO:0000001 ! mid level
+
+[Term]
+id: GO:0009999
+name: obsolete term
+namespace: biological_process
+is_a: GO:0008150 ! biological_process
+is_obsolete: true
+
+[Typedef]
+id: part_of
+name: part of
+"""
+
+
+class TestLoadOboAncestors:
+    def test_transitive_is_a_closure(self, tmp_path: Path) -> None:
+        obo = tmp_path / "tiny.obo"
+        obo.write_text(_TINY_OBO, encoding="utf-8")
+        ancestors, namespace = load_obo_ancestors(obo)
+        assert ancestors("GO:0000002") == {"GO:0000001", "GO:0008150"}
+        assert namespace["GO:0000002"] == "biological_process"
+
+    def test_part_of_edge_followed(self, tmp_path: Path) -> None:
+        obo = tmp_path / "tiny.obo"
+        obo.write_text(_TINY_OBO, encoding="utf-8")
+        ancestors, _ = load_obo_ancestors(obo)
+        assert ancestors("GO:0000003") == {"GO:0000001", "GO:0008150"}
+
+    def test_obsolete_term_dropped(self, tmp_path: Path) -> None:
+        obo = tmp_path / "tiny.obo"
+        obo.write_text(_TINY_OBO, encoding="utf-8")
+        ancestors, namespace = load_obo_ancestors(obo)
+        assert ancestors("GO:0009999") == set()
+        assert "GO:0009999" not in namespace
+
+    def test_root_has_no_ancestors(self, tmp_path: Path) -> None:
+        obo = tmp_path / "tiny.obo"
+        obo.write_text(_TINY_OBO, encoding="utf-8")
+        ancestors, _ = load_obo_ancestors(obo)
+        assert ancestors("GO:0008150") == set()
+
+
+# -- S2: true-path propagation into GO predictions ------------------------
+
+
+# Dict-backed ancestor lookup (no OBO file needed): leaf -> mid -> root.
+_ANC = {
+    "GO:0000002": {"GO:0000001", "GO:0008150"},
+    "GO:0000001": {"GO:0008150"},
+}
+
+
+def _ancestors(go_id: str) -> set[str]:
+    return _ANC.get(go_id, set())
+
+
+def _ann(accession: str, go_terms: tuple[str, ...]) -> InterProAnnotation:
+    return InterProAnnotation(
+        source_db="Pfam",
+        accession=accession,
+        start=1,
+        end=10,
+        go_terms=go_terms,
+    )
+
+
+class TestPropagateGoPredictions:
+    def test_direct_term_and_ancestors_emitted(self) -> None:
+        preds = list(
+            propagate_go_predictions(
+                [_ann("P1", ("GO:0000002",))], ancestors=_ancestors
+            )
+        )
+        go_ids = {p.go_id for p in preds}
+        # Leaf + mid emitted; the BP root is dropped by default.
+        assert go_ids == {"GO:0000002", "GO:0000001"}
+        assert all(p.accession == "P1" for p in preds)
+        assert all(p.score == 1.0 for p in preds)
+
+    def test_root_dropped_by_default(self) -> None:
+        preds = list(
+            propagate_go_predictions(
+                [_ann("P1", ("GO:0000002",))], ancestors=_ancestors
+            )
+        )
+        assert not (GO_ROOTS & {p.go_id for p in preds})
+
+    def test_root_kept_when_drop_roots_false(self) -> None:
+        preds = list(
+            propagate_go_predictions(
+                [_ann("P1", ("GO:0000002",))],
+                ancestors=_ancestors,
+                drop_roots=False,
+            )
+        )
+        assert "GO:0008150" in {p.go_id for p in preds}
+
+    def test_max_score_wins_on_duplicate(self) -> None:
+        # Same protein, two hits; mid term is both directly asserted (hit 2)
+        # and a propagated ancestor (hit 1). Direct score must win.
+        preds = list(
+            propagate_go_predictions(
+                [
+                    _ann("P1", ("GO:0000002",)),
+                    _ann("P1", ("GO:0000001",)),
+                ],
+                ancestors=_ancestors,
+                prop_decay=0.5,
+            )
+        )
+        by_go = {p.go_id: p.score for p in preds}
+        # Directly asserted -> 1.0, not the 0.5 propagated value.
+        assert by_go["GO:0000001"] == 1.0
+        # Leaf directly asserted on hit 1.
+        assert by_go["GO:0000002"] == 1.0
+
+    def test_decay_applied_to_pure_ancestor(self) -> None:
+        preds = list(
+            propagate_go_predictions(
+                [_ann("P1", ("GO:0000002",))],
+                ancestors=_ancestors,
+                prop_decay=0.5,
+            )
+        )
+        by_go = {p.go_id: p.score for p in preds}
+        assert by_go["GO:0000002"] == 1.0  # directly asserted
+        assert by_go["GO:0000001"] == 0.5  # ancestor only
+
+    def test_release_stamped_on_predictions(self) -> None:
+        preds = list(
+            propagate_go_predictions(
+                [_ann("P1", ("GO:0000002",))], ancestors=_ancestors
+            )
+        )
+        assert preds
+        assert all(p.interpro2go_release == INTERPRO2GO_RELEASE for p in preds)
+
+    def test_output_sorted_by_protein_then_go(self) -> None:
+        preds = list(
+            propagate_go_predictions(
+                [
+                    _ann("P2", ("GO:0000002",)),
+                    _ann("P1", ("GO:0000001",)),
+                ],
+                ancestors=_ancestors,
+            )
+        )
+        accessions = [p.accession for p in preds]
+        assert accessions == sorted(accessions)
+
+    def test_empty_go_terms_yields_no_predictions(self) -> None:
+        assert (
+            list(propagate_go_predictions([_ann("P1", ())], ancestors=_ancestors))
+            == []
+        )
+
+    def test_prediction_is_immutable(self) -> None:
+        pred = InterProGOPrediction(
+            accession="P1",
+            go_id="GO:0000001",
+            score=1.0,
+            interpro2go_release=INTERPRO2GO_RELEASE,
+        )
+        with pytest.raises(ValidationError):
+            pred.score = 0.5  # type: ignore[misc]
+
+
+# -- S2: InterProSource.predict_go orchestration --------------------------
+
+
+class TestPredictGo:
+    def test_predict_go_emits_predictions_and_events(self) -> None:
+        emit, captured = _capture_emit()
+        preds = list(
+            plugin.predict_go(
+                [_ann("P1", ("GO:0000002",))],
+                ancestors=_ancestors,
+                emit=emit,
+            )
+        )
+        assert {p.go_id for p in preds} == {"GO:0000002", "GO:0000001"}
+        events = [event for event, *_ in captured]
+        assert "source.interpro.predict_go_start" in events
+        assert "source.interpro.predict_go_done" in events
+
+    def test_done_event_reports_prediction_count(self) -> None:
+        emit, captured = _capture_emit()
+        list(
+            plugin.predict_go(
+                [_ann("P1", ("GO:0000002",))],
+                ancestors=_ancestors,
+                emit=emit,
+            )
+        )
+        done = [fields for event, fields, _ in captured if event == "source.interpro.predict_go_done"]
+        assert done
+        assert done[0]["predictions"] == 2
+        assert done[0]["interpro2go_release"] == INTERPRO2GO_RELEASE

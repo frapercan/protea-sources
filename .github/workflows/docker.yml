@@ -1,9 +1,6 @@
 name: Docker
 
 on:
-  push:
-    branches: [develop, master, main]
-    tags: ["v*"]
   release:
     types: [published]
   workflow_dispatch:

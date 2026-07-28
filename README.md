@@ -12,9 +12,15 @@ registers via the `protea.sources` `entry_points` group so that
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](https://unlicense.org/)
 [![PyPI](https://img.shields.io/pypi/v/protea-sources.svg)](https://pypi.org/project/protea-sources/)
 
-**Status:** v0.2.1, production. All four source plugins (GOA, QuickGO,
-UniProt, InterPro) are deployed and used in PROTEA ingestion operations.
-The API may change across minor releases.
+**Status:** in use. All four source plugins are deployed and drive the
+ingestion operations in the platform. The API may still change.
+Every internal dependency in this stack now names a commit rather than a
+branch, checked on each pull request. Updating one is a pull request here that
+moves the commit, gated by this repository's own checks.
+
+A definitive campaign run is being prepared for the doctoral thesis, and
+earlier experimental results are being recomputed rather than carried forward.
+No headline number is quoted in this file as current.
 
 **Documentation:** [protea-sources.readthedocs.io](https://protea-sources.readthedocs.io)
 (concepts and the annotation-source contract, quickstart, one page per source, full API reference).

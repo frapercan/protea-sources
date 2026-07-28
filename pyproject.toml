@@ -22,7 +22,7 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = ">=3.12,<4.0"
-"protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", branch = "main" }
+"protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", rev = "7500dc2313ed2df9c53821f2a10588c1ee7abe81" }
 requests = ">=2.31"
 
 [tool.poetry.group.dev.dependencies]
@@ -59,7 +59,7 @@ select = ["E", "F", "W", "I", "B", "UP", "N", "RUF"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 # numpy / pandas generic types add ``Any, Any`` bloat; tighten when

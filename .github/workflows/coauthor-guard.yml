@@ -1,0 +1,18 @@
+name: Co-author guard
+
+# Server-side guard against assistant attribution in commit messages and pull
+# request bodies. It calls the shared definition rather than carrying a copy,
+# so every repository is held to the same rule and a hardening lands once.
+#
+# This repository REQUIRED the check before this file existed, so no pull
+# request against the protected branch could report it and none could merge.
+# A required check that nothing produces protects nothing and blocks
+# everything, which is the worst of both.
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  coauthor-guard:
+    uses: frapercan/agent-farm/.github/workflows/coauthor-guard.yml@main

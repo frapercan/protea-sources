@@ -22,7 +22,10 @@ whose version bump drives downstream rebuilds.
   over the next 30, and to roughly 4 by page 80, which puts the
   wall-clock time of a full walk between 10 and 44 hours. The release
   files are static and served at full bandwidth: the same two files are
-  102 MB and download in about 18 seconds.
+  102 MB and download in about 18 seconds. Each file's `file_done` event
+  carries the md5 and byte count of the compressed bytes, matching what
+  the release directory's `RELEASE.metalink` publishes, so the caller's
+  log identifies the bytes a corpus came from and not merely the URL.
 - `parse_fasta_lines`: the line-oriented form of `parse_fasta_text`,
   which now delegates to it. Lets a caller feed a decompressing stream
   straight in, so peak memory tracks one compressed file rather than

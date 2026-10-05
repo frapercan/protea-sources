@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import csv
 import gzip
+import hashlib
 import re
 from collections.abc import Iterable, Iterator
 from collections.abc import Sequence as Seq
@@ -322,9 +323,12 @@ class UniProtSource(AnnotationSource):
         They are also more reproducible: a release directory is
         immutable and hash-published, so the caller can pin and verify
         the exact bytes a corpus was built from, which a live query
-        against a moving database cannot offer. Pinning is the
-        caller's job -- this method takes the URLs it is given and
-        does not resolve ``current_release``.
+        against a moving database cannot offer. Each file's md5 and
+        byte count are emitted on its ``file_done`` event, matching
+        what the release directory's ``RELEASE.metalink`` publishes, so
+        the caller's log identifies the bytes and not merely the URL.
+        Pinning is still the caller's job -- this method takes the URLs
+        it is given and does not resolve ``current_release``.
 
         Bodies are gunzipped incrementally, so peak memory is one
         compressed file rather than the decompressed text. Retries,
@@ -359,6 +363,13 @@ class UniProtSource(AnnotationSource):
             "info",
         )
         resp = self._client.get_with_retries(url, payload, emit)
+        # md5 of the compressed bytes, which is what a release
+        # directory's RELEASE.metalink publishes. Emitting it puts the
+        # identity of the exact bytes in the caller's event log, so a
+        # corpus can be traced to them even after ``current_release``
+        # has moved on. Integrity against a published checksum, not a
+        # security digest.
+        digest = hashlib.md5(resp.content, usedforsecurity=False).hexdigest()
         count = 0
         with gzip.GzipFile(fileobj=BytesIO(resp.content)) as raw:
             text = TextIOWrapper(raw, encoding="utf-8", errors="replace")
@@ -368,7 +379,7 @@ class UniProtSource(AnnotationSource):
         emit(
             "source.uniprot_release_fasta.file_done",
             None,
-            {"file": index, "records": count},
+            {"file": index, "records": count, "md5": digest, "bytes": len(resp.content)},
             "info",
         )
 

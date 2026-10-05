@@ -19,6 +19,7 @@ Layers (mirroring test_goa.py / test_quickgo.py):
 from __future__ import annotations
 
 import gzip
+import hashlib
 from importlib.metadata import entry_points
 from unittest.mock import MagicMock, patch
 
@@ -553,10 +554,9 @@ class TestStreamReleaseFastaWiring:
     def test_emits_a_per_file_record_count(self) -> None:
         plugin_instance = UniProtSource()
         emit, captured = _capture_emit()
+        body = gzip.compress(_FASTA_TWO)
         with patch.object(
-            plugin_instance._client.session,
-            "get",
-            return_value=_mock_resp(gzip.compress(_FASTA_TWO)),
+            plugin_instance._client.session, "get", return_value=_mock_resp(body)
         ):
             list(
                 plugin_instance.stream_release_fasta(
@@ -566,7 +566,39 @@ class TestStreamReleaseFastaWiring:
                 )
             )
         done = [f for e, f in captured if e == "source.uniprot_release_fasta.file_done"]
-        assert done == [{"file": 1, "records": 2}]
+        assert done == [
+            {
+                "file": 1,
+                "records": 2,
+                "md5": hashlib.md5(body, usedforsecurity=False).hexdigest(),
+                "bytes": len(body),
+            }
+        ]
+
+    def test_emits_the_md5_of_the_compressed_bytes(self) -> None:
+        # The digest must be of the .gz as served, which is what a
+        # release directory's RELEASE.metalink publishes -- not of the
+        # decompressed FASTA, which no checksum is published for.
+        plugin_instance = UniProtSource()
+        emit, captured = _capture_emit()
+        body = gzip.compress(_FASTA_TWO)
+        with patch.object(
+            plugin_instance._client.session, "get", return_value=_mock_resp(body)
+        ):
+            list(
+                plugin_instance.stream_release_fasta(
+                    ["https://example.com/uniprot_sprot.fasta.gz"],
+                    payload=self._payload(),
+                    emit=emit,
+                )
+            )
+        (done,) = [
+            f for e, f in captured if e == "source.uniprot_release_fasta.file_done"
+        ]
+        assert done["md5"] == hashlib.md5(body, usedforsecurity=False).hexdigest()
+        assert done["md5"] != hashlib.md5(
+            _FASTA_TWO, usedforsecurity=False
+        ).hexdigest()
 
     def test_counts_http_requests_for_the_operation(self) -> None:
         plugin_instance = UniProtSource()

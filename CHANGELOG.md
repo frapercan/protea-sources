@@ -12,6 +12,22 @@ whose version bump drives downstream rebuilds.
 
 ### Added
 
+- `UniProtSource.stream_release_fasta`: reads `UniProtProteinRecord`s
+  from a UniProt release directory's gzipped flat files instead of
+  walking the REST search endpoint by cursor. The two are
+  content-equivalent for `reviewed:true` -- `uniprot_sprot.fasta.gz`
+  plus `uniprot_sprot_varsplic.fasta.gz` are that query materialised --
+  but they differ in cost. Measured on a 680,000-record fetch, cursor
+  throughput decayed from 66 records/s over the first 50 pages to 17
+  over the next 30, and to roughly 4 by page 80, which puts the
+  wall-clock time of a full walk between 10 and 44 hours. The release
+  files are static and served at full bandwidth: the same two files are
+  102 MB and download in about 18 seconds.
+- `parse_fasta_lines`: the line-oriented form of `parse_fasta_text`,
+  which now delegates to it. Lets a caller feed a decompressing stream
+  straight in, so peak memory tracks one compressed file rather than
+  the decompressed text.
+
 - Optional raw-line filter on the GOA parser: `parse_gaf_line`,
   `parse_gaf_text` and `GoaSource.stream` accept an `accept` predicate
   (`RawLineFilter`) that runs on the tab-split columns *before*

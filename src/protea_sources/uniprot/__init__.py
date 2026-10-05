@@ -13,10 +13,13 @@ Persistence (FK-safe upsert against ``Protein`` + ``Sequence`` tables)
 stays in PROTEA's :class:`InsertProteinsOperation` which consumes the
 record stream.
 
-The plugin exposes two modality-specific stream methods:
+The plugin exposes three modality-specific stream methods:
 
 * :meth:`UniProtSource.stream_fasta` yields
   :class:`UniProtProteinRecord` instances over UniProt FASTA pages.
+* :meth:`UniProtSource.stream_release_fasta` yields the same records
+  from a release directory's gzipped flat files, for result sets large
+  enough that cursor pagination is rate-limited into impracticality.
 * :meth:`UniProtSource.stream_metadata` yields
   :class:`UniProtMetadataRecord` instances over UniProt TSV pages
   (F2A.6-real step 4, UniProt metadata migration).
@@ -31,8 +34,9 @@ from __future__ import annotations
 import csv
 import gzip
 import re
-from collections.abc import Iterator
-from io import BytesIO, StringIO
+from collections.abc import Iterable, Iterator
+from collections.abc import Sequence as Seq
+from io import BytesIO, StringIO, TextIOWrapper
 from typing import Any
 from urllib.parse import quote
 
@@ -105,13 +109,18 @@ def parse_fasta_header(header: str) -> dict[str, Any]:
     }
 
 
-def parse_fasta_text(fasta_text: str) -> Iterator[UniProtProteinRecord]:
-    """Parse a UniProt FASTA string into a record iterator.
+def parse_fasta_lines(lines: Iterable[str]) -> Iterator[UniProtProteinRecord]:
+    """Parse a stream of UniProt FASTA lines into a record iterator.
 
     Header lines start with ``>``; subsequent non-empty lines are
     sequence content. Whitespace inside the sequence is stripped.
     Records with empty sequences are skipped silently (UniProt
     occasionally returns malformed entries).
+
+    This is the line-oriented form, so a caller holding a file handle
+    or a decompressing stream never has to materialise the whole
+    FASTA as one string. :func:`parse_fasta_text` wraps it for the
+    in-memory case.
     """
     header: str | None = None
     seq_lines: list[str] = []
@@ -138,7 +147,7 @@ def parse_fasta_text(fasta_text: str) -> Iterator[UniProtProteinRecord]:
             sequence_hash=compute_sequence_hash(seq),
         )
 
-    for raw in fasta_text.splitlines():
+    for raw in lines:
         line = raw.strip()
         if not line:
             continue
@@ -154,6 +163,15 @@ def parse_fasta_text(fasta_text: str) -> Iterator[UniProtProteinRecord]:
     record = flush()
     if record is not None:
         yield record
+
+
+def parse_fasta_text(fasta_text: str) -> Iterator[UniProtProteinRecord]:
+    """Parse a UniProt FASTA string into a record iterator.
+
+    Thin wrapper over :func:`parse_fasta_lines` for callers that
+    already hold the whole text, such as a paginated REST response.
+    """
+    yield from parse_fasta_lines(fasta_text.splitlines())
 
 
 def _decode_response_body(content: bytes, compressed: bool) -> str:
@@ -278,6 +296,81 @@ class UniProtSource(AnnotationSource):
             next_cursor = extract_next_cursor(resp.headers.get("link", ""))
             if not next_cursor:
                 break
+
+    def stream_release_fasta(
+        self,
+        urls: Seq[str],
+        *,
+        payload: UniProtFastaStreamPayload,
+        emit: Any,
+    ) -> Iterator[UniProtProteinRecord]:
+        """Yield records from UniProt's published release flat files.
+
+        Each URL names one gzipped FASTA from a UniProt release
+        directory, typically ``uniprot_sprot.fasta.gz`` (the canonical
+        Swiss-Prot entries) plus ``uniprot_sprot_varsplic.fasta.gz``
+        (their isoform sequences). Together they are the materialised
+        result of ``reviewed:true``, so they carry the same records
+        that :meth:`stream_fasta` would walk page by page.
+
+        The difference is cost, not content. Cursor pagination over a
+        result set of that size is progressively rate-limited by
+        UniProt: throughput decays over the walk, which makes the
+        wall-clock time of a full fetch unbounded in practice. The
+        release files are static and served at full bandwidth.
+
+        They are also more reproducible: a release directory is
+        immutable and hash-published, so the caller can pin and verify
+        the exact bytes a corpus was built from, which a live query
+        against a moving database cannot offer. Pinning is the
+        caller's job -- this method takes the URLs it is given and
+        does not resolve ``current_release``.
+
+        Bodies are gunzipped incrementally, so peak memory is one
+        compressed file rather than the decompressed text. Retries,
+        backoff and the HTTP counters are shared with
+        :meth:`stream_fasta` via the same client; ``payload`` is read
+        only for those transport knobs and its query fields are
+        ignored.
+        """
+        self._client.reset()
+        emit(
+            "source.uniprot_release_fasta.start",
+            None,
+            {"files": len(urls)},
+            "info",
+        )
+
+        for index, url in enumerate(urls, start=1):
+            yield from self._stream_one_release_file(index, url, payload, emit)
+
+    def _stream_one_release_file(
+        self,
+        index: int,
+        url: str,
+        payload: UniProtFastaStreamPayload,
+        emit: Any,
+    ) -> Iterator[UniProtProteinRecord]:
+        """Fetch and parse one gzipped release file, counting its records."""
+        emit(
+            "source.uniprot_release_fasta.file_start",
+            None,
+            {"file": index, "url": url},
+            "info",
+        )
+        resp = self._client.get_with_retries(url, payload, emit)
+        count = 0
+        with gzip.GzipFile(fileobj=BytesIO(resp.content)) as raw:
+            text = TextIOWrapper(raw, encoding="utf-8", errors="replace")
+            for record in parse_fasta_lines(text):
+                count += 1
+                yield record
+        emit(
+            "source.uniprot_release_fasta.file_done",
+            None,
+            {"file": index, "records": count},
+            "info",
+        )
 
     def stream_metadata(
         self,

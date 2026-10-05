@@ -12,6 +12,17 @@ whose version bump drives downstream rebuilds.
 
 ### Added
 
+- Optional raw-line filter on the GOA parser: `parse_gaf_line`,
+  `parse_gaf_text` and `GoaSource.stream` accept an `accept` predicate
+  (`RawLineFilter`) that runs on the tab-split columns *before*
+  `GoaAnnotationRecord` is constructed. A caller loading a
+  `goa_uniprot_all` release into a bounded protein universe keeps very
+  little of it -- 671,138 records out of 280,922,738 lines on GOA 156,
+  0.24% -- and previously paid for a validated record on every discarded
+  line. Measured through the plugin on that release, 11.5 minutes becomes
+  4.4 (2.6x), which is about 9 hours over the 75-release series. The
+  predicate sees raw strings, so empty fields arrive as `""` rather than
+  `None`; omitting it leaves every existing caller unchanged.
 - InterPro GO emission (`protea_sources.interpro.interpro2go`): the
   `interpro` plugin now turns InterProScan domain hits into
   `(protein, go_id, score)` GO predictions. Each hit's interpro2go GO

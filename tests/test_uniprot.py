@@ -34,6 +34,7 @@ from protea_contracts import (
 from protea_sources.uniprot import (
     UniProtSource,
     parse_fasta_header,
+    parse_fasta_lines,
     parse_fasta_text,
     parse_metadata_tsv,
     plugin,
@@ -431,6 +432,163 @@ _TSV_ROW_UNREVIEWED = (
     "Q67890\tunreviewed\tQ67890_MOUSE\tPutative bar\tBar\tMus musculus\t"
     "210\t\t\t\t"
 )
+
+
+class TestParseFastaLines:
+    """The line-oriented parser is what the release path consumes."""
+
+    def test_accepts_an_iterator_not_just_a_list(self) -> None:
+        # A decompressing stream is an iterator with no len() and no
+        # second pass; the parser must not quietly need a sequence.
+        lines = iter(_FASTA_TWO.decode().splitlines())
+        records = list(parse_fasta_lines(lines))
+        assert [r.accession for r in records] == ["P12345", "Q67890"]
+
+    def test_does_not_buffer_the_whole_input(self) -> None:
+        # Pull one record and assert the source was not drained: this
+        # is the property that keeps peak memory off the file size.
+        consumed: list[str] = []
+
+        def counting_lines():
+            for line in _FASTA_TWO.decode().splitlines():
+                consumed.append(line)
+                yield line
+
+        stream = parse_fasta_lines(counting_lines())
+        first = next(stream)
+        assert first.accession == "P12345"
+        # Reaching record 1 requires seeing record 2's header, and no more.
+        assert len(consumed) == 3
+
+    def test_text_wrapper_agrees_with_the_string_form(self) -> None:
+        from io import BytesIO, TextIOWrapper
+
+        via_text = list(parse_fasta_text(_FASTA_TWO.decode()))
+        via_lines = list(parse_fasta_lines(TextIOWrapper(BytesIO(_FASTA_TWO))))
+        assert [r.accession for r in via_text] == [r.accession for r in via_lines]
+        assert [r.sequence_hash for r in via_text] == [
+            r.sequence_hash for r in via_lines
+        ]
+
+
+class TestStreamReleaseFastaWiring:
+    def _payload(self) -> UniProtFastaStreamPayload:
+        return UniProtFastaStreamPayload(
+            search_criteria="reviewed:true",
+            max_retries=2,
+            backoff_base_seconds=0.0,
+            backoff_max_seconds=0.0,
+            jitter_seconds=0.0,
+        )
+
+    def test_gunzips_and_yields_records(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, _ = _capture_emit()
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            return_value=_mock_resp(gzip.compress(_FASTA_TWO)),
+        ):
+            records = list(
+                plugin_instance.stream_release_fasta(
+                    ["https://example.com/uniprot_sprot.fasta.gz"],
+                    payload=self._payload(),
+                    emit=emit,
+                )
+            )
+        assert [r.accession for r in records] == ["P12345", "Q67890"]
+
+    def test_concatenates_the_files_in_the_order_given(self) -> None:
+        # Canonical file then varsplic: isoforms must arrive after their
+        # canonical entries, which is the order the operation relies on
+        # when it groups rows by canonical_accession.
+        plugin_instance = UniProtSource()
+        emit, _ = _capture_emit()
+        varsplic = f">{_HEADER_ISOFORM}\nMKTAYIAK\n".encode()
+        canonical_url = "https://example.com/uniprot_sprot.fasta.gz"
+        varsplic_url = "https://example.com/uniprot_sprot_varsplic.fasta.gz"
+        # Dispatch on the URL, not on call order: a side_effect list
+        # would answer in sequence whatever was asked for, and would
+        # still pass if the implementation walked the URLs backwards.
+        bodies = {
+            canonical_url: gzip.compress(_FASTA_TWO),
+            varsplic_url: gzip.compress(varsplic),
+        }
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            side_effect=lambda url, **_kw: _mock_resp(bodies[url]),
+        ) as mock_get:
+            records = list(
+                plugin_instance.stream_release_fasta(
+                    [canonical_url, varsplic_url],
+                    payload=self._payload(),
+                    emit=emit,
+                )
+            )
+        assert mock_get.call_count == 2
+        assert [r.accession for r in records] == ["P12345", "Q67890", "P12345-2"]
+        assert records[2].canonical_accession == "P12345"
+        assert records[2].isoform_index == 2
+
+    def test_requests_exactly_the_urls_given(self) -> None:
+        # No cursor, no query string: the release path must not rewrite
+        # or paginate the URLs it was handed.
+        plugin_instance = UniProtSource()
+        emit, _ = _capture_emit()
+        url = "https://example.com/release/uniprot_sprot.fasta.gz"
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            return_value=_mock_resp(gzip.compress(_FASTA_TWO)),
+        ) as mock_get:
+            list(
+                plugin_instance.stream_release_fasta(
+                    [url], payload=self._payload(), emit=emit
+                )
+            )
+        assert mock_get.call_count == 1
+        assert mock_get.call_args_list[0].args[0] == url
+
+    def test_emits_a_per_file_record_count(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, captured = _capture_emit()
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            return_value=_mock_resp(gzip.compress(_FASTA_TWO)),
+        ):
+            list(
+                plugin_instance.stream_release_fasta(
+                    ["https://example.com/uniprot_sprot.fasta.gz"],
+                    payload=self._payload(),
+                    emit=emit,
+                )
+            )
+        done = [f for e, f in captured if e == "source.uniprot_release_fasta.file_done"]
+        assert done == [{"file": 1, "records": 2}]
+
+    def test_counts_http_requests_for_the_operation(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, _ = _capture_emit()
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            side_effect=[
+                _mock_resp(gzip.compress(_FASTA_TWO)),
+                _mock_resp(gzip.compress(_FASTA_TWO)),
+            ],
+        ):
+            list(
+                plugin_instance.stream_release_fasta(
+                    ["https://example.com/a.gz", "https://example.com/b.gz"],
+                    payload=self._payload(),
+                    emit=emit,
+                )
+            )
+        requests_made, retries = plugin_instance.http_counters
+        assert requests_made == 2
+        assert retries == 0
 
 
 class TestParseMetadataTsv:

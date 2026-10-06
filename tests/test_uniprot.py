@@ -33,6 +33,11 @@ from protea_contracts import (
 )
 
 from protea_sources.uniprot import (
+    ACCESSIONS_URL,
+    MAX_ACCESSIONS_PER_REQUEST,
+    MAX_OR_CONDITIONS,
+    SEARCH_URL,
+    RetryKnobs,
     UniProtSource,
     parse_fasta_header,
     parse_fasta_lines,
@@ -621,6 +626,149 @@ class TestStreamReleaseFastaWiring:
         requests_made, retries = plugin_instance.http_counters
         assert requests_made == 2
         assert retries == 0
+
+
+
+class TestTheOneShotFetches:
+    """The two calls that let an operation stop opening its own socket.
+
+    They exist because ``ensure_goa_universe`` grew three UniProt endpoints and
+    a second copy of the retry client inside PROTEA, undoing a migration this
+    plugin's own docstring describes as finished.
+    """
+
+    def _knobs(self) -> RetryKnobs:
+        return RetryKnobs(max_retries=2, backoff_base_seconds=0.0,
+                          backoff_max_seconds=0.0, jitter_seconds=0.0)
+
+    def test_batch_fetch_asks_for_exactly_the_accessions_given(self) -> None:
+        p = UniProtSource()
+        emit, _ = _capture_emit()
+        with patch.object(
+            p._client.session, "get", return_value=_mock_resp(b"acc\tseq\nP12345\tMKT\n")
+        ) as mock_get:
+            salida = p.fetch_accessions_tsv(
+                ["P12345", "Q67890"], fields="accession,sequence", emit=emit, knobs=self._knobs()
+            )
+        url = mock_get.call_args_list[0].args[0]
+        assert url.startswith(ACCESSIONS_URL)
+        assert "accessions=P12345,Q67890" in url
+        assert "fields=accession,sequence" in url
+        assert "format=tsv" in url
+        assert salida == "acc\tseq\nP12345\tMKT\n"
+
+    def test_batch_fetch_refuses_more_than_uniprot_allows(self) -> None:
+        # Nombrado aqui en vez de dejarlo al 400 de UniProt, para que el mensaje
+        # apunte al troceado del llamante y no al servicio.
+        p = UniProtSource()
+        emit, _ = _capture_emit()
+        with (
+            patch.object(p._client.session, "get") as mock_get,
+            pytest.raises(ValueError, match="chunk before calling"),
+        ):
+            p.fetch_accessions_tsv(
+                ["P12345"] * (MAX_ACCESSIONS_PER_REQUEST + 1),
+                fields="accession", emit=emit,
+            )
+        assert not mock_get.called
+
+    def test_a_shorter_answer_is_not_an_error(self) -> None:
+        # Una accesion que UniProt ya no sirve se OMITE del cuerpo. Que la
+        # respuesta traiga menos filas que accesiones pedidas significa "ya no
+        # esta", no "fallo", y por eso no se levanta nada aqui.
+        p = UniProtSource()
+        emit, _ = _capture_emit()
+        with patch.object(
+            p._client.session, "get", return_value=_mock_resp(b"acc\tseq\nP12345\tMKT\n")
+        ):
+            salida = p.fetch_accessions_tsv(
+                ["P12345", "A0A024QYT6"], fields="accession,sequence",
+                emit=emit, knobs=self._knobs(),
+            )
+        assert "A0A024QYT6" not in salida
+        assert salida.count("\n") == 2
+
+    def test_secondary_search_builds_a_sec_acc_query(self) -> None:
+        p = UniProtSource()
+        emit, _ = _capture_emit()
+        with patch.object(
+            p._client.session, "get", return_value=_mock_resp(b'{"results": [{"primaryAccession": "P9WEV8"}]}')
+        ) as mock_get:
+            salida = p.search_secondary_accessions(
+                ["C8VQ65"], emit=emit, knobs=self._knobs()
+            )
+        url = mock_get.call_args_list[0].args[0]
+        assert url.startswith(SEARCH_URL)
+        assert "sec_acc%3AC8VQ65" in url or "sec_acc:C8VQ65" in url
+        # Sin fields: pedir fields=sec_acc da 400, es campo de CONSULTA y no de
+        # retorno, asi que el mapa se lee del documento completo.
+        assert "fields=" not in url
+        assert salida == {"results": [{"primaryAccession": "P9WEV8"}]}
+
+    def test_secondary_search_refuses_more_than_the_or_cap(self) -> None:
+        p = UniProtSource()
+        emit, _ = _capture_emit()
+        with (
+            patch.object(p._client.session, "get") as mock_get,
+            pytest.raises(ValueError, match="chunk before calling"),
+        ):
+            p.search_secondary_accessions(["C8VQ65"] * (MAX_OR_CONDITIONS + 1), emit=emit)
+        assert not mock_get.called
+
+    def test_both_reuse_the_existing_retry_client(self) -> None:
+        # Un 503 del Varnish de UniProt no puede tirar la llamada: el cliente que
+        # ya existia reintenta 429 y 5xx, y por eso no hacia falta otro.
+        for llamada in (
+            lambda p, e: p.fetch_accessions_tsv(["P12345"], fields="accession", emit=e,
+                                                knobs=self._knobs()),
+            lambda p, e: p.search_secondary_accessions(["C8VQ65"], emit=e, knobs=self._knobs()),
+        ):
+            p = UniProtSource()
+            emit, _ = _capture_emit()
+            with (
+                patch.object(
+                    p._client.session, "get",
+                    side_effect=[_mock_resp(b"", status=503), _mock_resp(b'{"results": []}')],
+                ) as mock_get,
+                patch("time.sleep"),
+            ):
+                llamada(p, emit)
+            assert mock_get.call_count == 2
+            assert p.http_counters == (2, 1)
+
+    def test_exhausted_retries_raise_and_never_return_empty(self) -> None:
+        # EL INVARIANTE: un lote que fallo no es un lote que no encontro nada.
+        # Devolver "" aqui se contaria como cero resultados, que es el defecto
+        # que ya costo una medicion: diez lotes dieron 400 y los fallos se
+        # tallaron como ceros, leyendose como "0% recuperable".
+        #
+        # El doble levanta en raise_for_status como hace la convencion de
+        # TestUniProtRetryClient, porque un MagicMock no lo hace solo: sin eso
+        # este test pasaba por StopIteration del side_effect y no probaba nada.
+        p = UniProtSource()
+        emit, _ = _capture_emit()
+        mala = _mock_resp(b"", status=503)
+        mala.raise_for_status.side_effect = RuntimeError("503 agotado")
+        with (
+            patch.object(p._client.session, "get", return_value=mala),
+            patch("time.sleep"),
+            pytest.raises(RuntimeError, match="503 agotado"),
+        ):
+            p.fetch_accessions_tsv(["P12345"], fields="accession", emit=emit,
+                                   knobs=self._knobs())
+
+    def test_the_service_limits_are_facts_not_tunables(self) -> None:
+        # Medidos contra el servicio: 1001 accesiones responden "Only '1000'
+        # accessions are allowed in each request", y 101 condiciones OR
+        # responden "Maximum allowed is 100".
+        assert MAX_ACCESSIONS_PER_REQUEST == 1000
+        assert MAX_OR_CONDITIONS == 100
+
+    def test_knobs_have_defaults_so_a_caller_need_not_care(self) -> None:
+        k = RetryKnobs()
+        assert k.max_retries >= 1 and k.timeout_seconds > 0
+        assert k.backoff_base_seconds > 0 and k.backoff_max_seconds >= k.backoff_base_seconds
+
 
 
 class TestParseMetadataTsv:

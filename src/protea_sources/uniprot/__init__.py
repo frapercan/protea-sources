@@ -24,6 +24,18 @@ The plugin exposes three modality-specific stream methods:
   :class:`UniProtMetadataRecord` instances over UniProt TSV pages
   (F2A.6-real step 4, UniProt metadata migration).
 
+and two one-shot fetches, for callers that already know which accessions they
+want and need an answer rather than a stream:
+
+* :meth:`UniProtSource.fetch_accessions_tsv` for the batch endpoint.
+* :meth:`UniProtSource.search_secondary_accessions` for the ``sec_acc:`` query,
+  the only route that resolves secondary accessions.
+
+Both exist so that no operation has to open its own socket. One did:
+``ensure_goa_universe`` grew three endpoints and a second copy of the retry
+client inside PROTEA, which is the migration this module's docstring already
+describes as finished.
+
 The generic :meth:`UniProtSource.stream` redirect raises
 ``NotImplementedError`` pointing callers at the specific method,
 because UniProt has no single stream modality (unlike goa / quickgo).
@@ -37,6 +49,7 @@ import hashlib
 import re
 from collections.abc import Iterable, Iterator
 from collections.abc import Sequence as Seq
+from dataclasses import dataclass
 from io import BytesIO, StringIO, TextIOWrapper
 from typing import Any
 from urllib.parse import quote
@@ -53,9 +66,50 @@ from protea_contracts import (
 
 from protea_sources.uniprot._http import UniProtRetryClient, extract_next_cursor
 
+#: Endpoint that answers a batch of accessions with one request.
+ACCESSIONS_URL = "https://rest.uniprot.org/uniprotkb/accessions"
+#: Search endpoint, the only route that resolves SECONDARY accessions.
+SEARCH_URL = "https://rest.uniprot.org/uniprotkb/search"
+
+#: Hard limit of :data:`ACCESSIONS_URL`. Asking for 1001 answers "Only '1000'
+#: accessions are allowed in each request". Measured against the service, not
+#: assumed. This is a fact about UniProt, not a tunable: it does not belong in a
+#: caller's payload, because a caller cannot choose it.
+MAX_ACCESSIONS_PER_REQUEST = 1000
+#: Cap on OR conditions per search query, stated by UniProt in the body of its
+#: 400: "Too many OR conditions in query. Maximum allowed is 100." Same
+#: reasoning as above.
+MAX_OR_CONDITIONS = 100
+
 _RE_OS = re.compile(r"\bOS=([^=]+?)\sOX=")
 _RE_OX = re.compile(r"\bOX=(\d+)")
 _RE_GN = re.compile(r"\bGN=([^\s]+)")
+
+
+@dataclass
+class RetryKnobs:
+    """Transport settings for the one-shot fetch methods.
+
+    NOT frozen, and that is a constraint rather than a choice: the private
+    ``_RetryKnobs`` Protocol that :class:`UniProtRetryClient` accepts declares
+    its members as settable variables, which pydantic's frozen models satisfy
+    and a frozen dataclass does not. Nothing mutates an instance of this; if the
+    Protocol is ever narrowed to read-only properties, freeze this too.
+
+    The streaming methods take their knobs from a contract payload, because
+    those payloads describe a JOB. A one-shot fetch is not a job: the caller
+    already has a payload of its own, and threading a second contract type
+    through for six transport numbers would put transport into the contract.
+    So these are a plain value object with the measured defaults, which the
+    caller may replace.
+    """
+
+    user_agent: str = "PROTEA/protea-sources"
+    timeout_seconds: int = 120
+    max_retries: int = 6
+    backoff_base_seconds: float = 2.0
+    backoff_max_seconds: float = 60.0
+    jitter_seconds: float = 0.5
 
 
 def parse_fasta_header(header: str) -> dict[str, Any]:
@@ -382,6 +436,105 @@ class UniProtSource(AnnotationSource):
             {"file": index, "records": count, "md5": digest, "bytes": len(resp.content)},
             "info",
         )
+
+    def fetch_accessions_tsv(
+        self,
+        accessions: Seq[str],
+        *,
+        fields: str,
+        emit: Any,
+        knobs: RetryKnobs | None = None,
+    ) -> str:
+        """Fetch one batch of accessions as TSV, with the requested fields.
+
+        One request for the whole batch, which is what makes this endpoint the
+        fast route: measured 0,2 to 0,9 s per thousand accessions, against a
+        cursor walk of the search endpoint that UniProt rate-limits into tens of
+        hours for a result set of this size.
+
+        IT MATCHES PRIMARY ACCESSIONS ONLY, and says nothing about it. A
+        secondary accession is simply absent from the body while
+        ``X-Total-Results`` still counts it, so a caller that trusts the header
+        reads a complete answer where half the rows are missing. Resolving those
+        is :meth:`search_secondary_accessions`, deliberately a separate call so
+        the two failure modes stay separate.
+
+        An accession the service no longer serves is likewise absent rather than
+        erroring: an entry deleted from UniProt answers 200 on its own URL with
+        ``entryType: Inactive`` and no sequence, and is omitted here. So the
+        answer being shorter than the request is normal and means "gone", not
+        "failed".
+
+        :raises ValueError: if the batch exceeds
+            :data:`MAX_ACCESSIONS_PER_REQUEST`. Named here rather than left to
+            UniProt's 400, so the message points at the caller's chunking
+            instead of at the service.
+        :raises RuntimeError: on a non-transient status or exhausted retries.
+            A batch that failed is never reported as a batch that found nothing:
+            an earlier measurement read 0% recoverable merges because ten
+            batches had 400'd and the failures were tallied as zeroes.
+        """
+        if len(accessions) > MAX_ACCESSIONS_PER_REQUEST:
+            raise ValueError(
+                f"{len(accessions)} accessions exceeds UniProt's limit of "
+                f"{MAX_ACCESSIONS_PER_REQUEST} per request; chunk before calling"
+            )
+        k = knobs or RetryKnobs()
+        url = f"{ACCESSIONS_URL}?accessions={','.join(accessions)}&fields={fields}&format=tsv"
+        emit(
+            "source.uniprot_accessions.fetch_start",
+            None,
+            {"accessions": len(accessions)},
+            "info",
+        )
+        resp = self._client.get_with_retries(url, k, emit)
+        return resp.content.decode("utf-8", errors="replace")
+
+    def search_secondary_accessions(
+        self,
+        accessions: Seq[str],
+        *,
+        emit: Any,
+        knobs: RetryKnobs | None = None,
+    ) -> dict[str, Any]:
+        """Resolve SECONDARY accessions through the search endpoint.
+
+        One ``sec_acc:`` query per batch, without ``fields``, deliberately.
+        Asking for ``fields=accession,sec_acc`` answers 400 ``Invalid fields
+        parameter value 'sec_acc'``: it is a valid QUERY field but not a RETURN
+        field, so the mapping has to be read from each entry's own
+        ``secondaryAccessions`` list in the full document.
+
+        The answer is returned raw. Deciding what a hit MEANS is the caller's
+        job and not transport's: an accession with one successor is a merge and
+        can be aliased, while one with several is a demerge and has no single
+        successor, so aliasing it would invent a curatorial decision. The
+        caller also has to group by the accession it asked for, because one
+        entry can absorb several of them.
+
+        :raises ValueError: if the batch exceeds :data:`MAX_OR_CONDITIONS`.
+        :raises RuntimeError: as in :meth:`fetch_accessions_tsv`.
+        """
+        if len(accessions) > MAX_OR_CONDITIONS:
+            raise ValueError(
+                f"{len(accessions)} OR conditions exceeds UniProt's limit of "
+                f"{MAX_OR_CONDITIONS}; chunk before calling"
+            )
+        import json
+        from urllib.parse import quote
+
+        k = knobs or RetryKnobs()
+        q = " OR ".join(f"sec_acc:{a}" for a in accessions)
+        url = f"{SEARCH_URL}?query={quote(q)}&format=json&size=500"
+        emit(
+            "source.uniprot_sec_acc.search_start",
+            None,
+            {"accessions": len(accessions)},
+            "info",
+        )
+        resp = self._client.get_with_retries(url, k, emit)
+        cuerpo = resp.content.decode("utf-8", errors="replace")
+        return json.loads(cuerpo)  # type: ignore[no-any-return]
 
     def stream_metadata(
         self,

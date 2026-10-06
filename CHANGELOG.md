@@ -12,6 +12,30 @@ whose version bump drives downstream rebuilds.
 
 ### Added
 
+- `UniProtSource.fetch_accessions_tsv` and
+  `UniProtSource.search_secondary_accessions`: the two one-shot fetches a caller
+  needs when it already knows which accessions it wants. Both drive the existing
+  `UniProtRetryClient`, so they inherit its backoff, `Retry-After` handling and
+  HTTP counters for free.
+  They exist because an operation in PROTEA (`ensure_goa_universe`) had grown
+  three UniProt endpoints and a *second* copy of the retry client, undoing a
+  migration this plugin's own module docstring describes as finished: "the
+  implementation mirrors the behaviour of the legacy
+  `protea.core.utils.UniProtHttpClient` but lives here so the plugin is
+  self-contained". With these two methods that operation can stop opening its
+  own socket, and PROTEA goes back to zero direct UniProt HTTP.
+- `ACCESSIONS_URL`, `SEARCH_URL`, `MAX_ACCESSIONS_PER_REQUEST` (1000) and
+  `MAX_OR_CONDITIONS` (100) as public constants. The two limits are measured
+  against the service -- 1001 accessions answer "Only '1000' accessions are
+  allowed in each request", 101 OR conditions answer "Maximum allowed is 100" --
+  and they are facts rather than tunables, so they belong here and not in a
+  caller's payload. Exceeding either raises `ValueError` naming the caller's
+  chunking, instead of surfacing UniProt's 400.
+- `RetryKnobs`: transport settings for those two methods, with the measured
+  defaults. Deliberately not a contract type: a one-shot fetch is not a job, and
+  threading a second payload through for six transport numbers would put
+  transport into the contract.
+
 - `UniProtSource.stream_release_fasta`: reads `UniProtProteinRecord`s
   from a UniProt release directory's gzipped flat files instead of
   walking the REST search endpoint by cursor. The two are

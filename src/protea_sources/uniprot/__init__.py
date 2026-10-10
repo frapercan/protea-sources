@@ -81,6 +81,16 @@ MAX_ACCESSIONS_PER_REQUEST = 1000
 #: reasoning as above.
 MAX_OR_CONDITIONS = 100
 
+#: Search endpoint of UniParc, which keeps the sequence of an accession
+#: UniProtKB has stopped serving.
+UNIPARC_SEARCH_URL = "https://rest.uniprot.org/uniparc/search"
+#: Cap on OR conditions for :data:`UNIPARC_SEARCH_URL`, which is NOT the 100 of
+#: :data:`MAX_OR_CONDITIONS` and does not announce itself: measured 2026-10-11,
+#: 50 conditions answer normally while 200 answer 200 OK with an empty body and
+#: no error. A silent empty answer is the worst failure shape there is, so the
+#: ValueError below fires before the request rather than after it.
+MAX_UNIPARC_OR_CONDITIONS = 50
+
 _RE_OS = re.compile(r"\bOS=([^=]+?)\sOX=")
 _RE_OX = re.compile(r"\bOX=(\d+)")
 _RE_GN = re.compile(r"\bGN=([^\s]+)")
@@ -252,9 +262,7 @@ def _build_search_url(payload: UniProtFastaStreamPayload, cursor: str | None) ->
     return base if not cursor else f"{base}&cursor={cursor}"
 
 
-def _build_metadata_url(
-    payload: UniProtMetadataStreamPayload, cursor: str | None
-) -> str:
+def _build_metadata_url(payload: UniProtMetadataStreamPayload, cursor: str | None) -> str:
     encoded_query = quote(payload.search_criteria)
     params = [
         "format=tsv",
@@ -265,6 +273,67 @@ def _build_metadata_url(
     ]
     base = f"{payload.base_url}?{'&'.join(params)}"
     return base if not cursor else f"{base}&cursor={cursor}"
+
+
+@dataclass(frozen=True)
+class UniParcRow:
+    """One UniParc entry, as its TSV row carries it.
+
+    A deliberately plain record and not a contract type, for the same reason
+    :meth:`UniProtSource.search_secondary_accessions` answers raw: what a row
+    MEANS for a given accession is a decision, not transport. Two of them, in
+    fact, and both are the caller's.
+
+    The first is WHICH ROW. One accession can answer several rows, one per
+    sequence version UniParc has ever seen: measured 2026-10-11 over a random
+    sample of 600 accessions that UniProtKB no longer serves, 670 rows came
+    back. ``first_seen`` and ``last_seen`` are here so the caller can pick the
+    version that was current at the moment it cares about, instead of being
+    handed one chosen by this module.
+
+    The second is WHICH ACCESSIONS. ``accessions`` lists every UniProtKB entry
+    that shares this exact sequence, so a row answers for accessions nobody
+    asked about, and the caller has to intersect with its own batch. The
+    entries usually carry a version suffix (``A0A014NDJ0.1``) and sometimes do
+    not (``A0A7D5Z9H9``); both forms are passed through unchanged rather than
+    normalised here, because the version is information and dropping it would
+    be this module deciding.
+    """
+
+    upi: str
+    accessions: tuple[str, ...]
+    first_seen: str
+    last_seen: str
+    length: int | None
+    sequence: str
+
+
+def parse_uniparc_tsv(tsv_text: str) -> Iterator[UniParcRow]:
+    """Parse a UniParc TSV string into :class:`UniParcRow` instances.
+
+    Driven by the header through :class:`csv.DictReader`, so the caller's
+    ``fields`` order does not matter and a column it did not ask for is simply
+    absent rather than shifting the others. A row with no ``Entry`` or no
+    ``Sequence`` is skipped: a UniParc entry without a sequence is the one thing
+    this route exists to provide, so it is not a partial answer, it is noise.
+    """
+    reader = csv.DictReader(StringIO(tsv_text), delimiter="\t")
+    for row in reader:
+        celda = {k: (v if v is not None else "") for k, v in row.items()}
+        upi = celda.get("Entry", "").strip()
+        secuencia = celda.get("Sequence", "").strip()
+        if not upi or not secuencia:
+            continue
+        crudas = celda.get("UniProtKB", "")
+        largo = celda.get("Length", "").strip()
+        yield UniParcRow(
+            upi=upi,
+            accessions=tuple(a.strip() for a in crudas.split(";") if a.strip()),
+            first_seen=celda.get("First seen", "").strip(),
+            last_seen=celda.get("Last seen", "").strip(),
+            length=int(largo) if largo.isdigit() else None,
+            sequence=secuencia,
+        )
 
 
 def parse_metadata_tsv(tsv_text: str) -> Iterator[UniProtMetadataRecord]:
@@ -535,6 +604,63 @@ class UniProtSource(AnnotationSource):
         resp = self._client.get_with_retries(url, k, emit)
         cuerpo = resp.content.decode("utf-8", errors="replace")
         return json.loads(cuerpo)  # type: ignore[no-any-return]
+
+    def search_uniparc_tsv(
+        self,
+        accessions: Seq[str],
+        *,
+        fields: str,
+        emit: Any,
+        knobs: RetryKnobs | None = None,
+    ) -> str:
+        """Fetch from UniParc the sequences UniProtKB no longer serves.
+
+        THE GAP THIS FILLS. :meth:`fetch_accessions_tsv` omits an accession the
+        service has stopped serving, and its docstring says so. What it does not
+        say is that the accession is not gone from the world: UniParc keeps
+        every sequence UniProtKB has ever held, deleted entries included.
+        Measured 2026-10-11 on ``A0A014NDJ0``, one of 28.868 that a full
+        resolution pass could not place: its own UniProtKB URL answers 200 with
+        an empty body, the batch endpoint answers 200 with
+        ``X-Total-Results: 1`` and no data row, and UniParc answers it in full.
+        Over a random sample of 600 of those 28.868, this route resolved 600.
+
+        WHY TSV AND NOT FASTA. The FASTA header carries only the UPI
+        (``>UPI0001FE00B9 status=active``), so a batched answer cannot be
+        mapped back to the accessions that were asked for. The TSV carries the
+        cross-reference, the dates and the sequence in one request, which is
+        what makes one pass enough.
+
+        The answer is returned raw, as in
+        :meth:`search_secondary_accessions`: :func:`parse_uniparc_tsv` turns it
+        into rows, and :class:`UniParcRow` documents the two decisions the
+        caller is left with.
+
+        :raises ValueError: if the batch exceeds
+            :data:`MAX_UNIPARC_OR_CONDITIONS`. Named here because UniParc does
+            NOT answer 400 on too many conditions: it answers 200 with an empty
+            body, so a caller that chunked wrong would read "none of these
+            exist" and record 50 proteins as unrecoverable.
+        :raises RuntimeError: as in :meth:`fetch_accessions_tsv`.
+        """
+        if len(accessions) > MAX_UNIPARC_OR_CONDITIONS:
+            raise ValueError(
+                f"{len(accessions)} OR conditions exceeds UniParc's limit of "
+                f"{MAX_UNIPARC_OR_CONDITIONS}; chunk before calling"
+            )
+        from urllib.parse import quote
+
+        k = knobs or RetryKnobs()
+        q = " OR ".join(accessions)
+        url = f"{UNIPARC_SEARCH_URL}?query={quote(q)}&format=tsv&fields={quote(fields)}&size=500"
+        emit(
+            "source.uniparc.search_start",
+            None,
+            {"accessions": len(accessions), "fields": fields},
+            "info",
+        )
+        resp = self._client.get_with_retries(url, k, emit)
+        return resp.content.decode("utf-8", errors="replace")
 
     def stream_metadata(
         self,

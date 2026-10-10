@@ -36,13 +36,16 @@ from protea_sources.uniprot import (
     ACCESSIONS_URL,
     MAX_ACCESSIONS_PER_REQUEST,
     MAX_OR_CONDITIONS,
+    MAX_UNIPARC_OR_CONDITIONS,
     SEARCH_URL,
+    UNIPARC_SEARCH_URL,
     RetryKnobs,
     UniProtSource,
     parse_fasta_header,
     parse_fasta_lines,
     parse_fasta_text,
     parse_metadata_tsv,
+    parse_uniparc_tsv,
     plugin,
 )
 from protea_sources.uniprot._http import UniProtRetryClient, extract_next_cursor
@@ -82,15 +85,9 @@ def test_stream_redirects_to_specific_methods() -> None:
 # -- Parser tests ---------------------------------------------------------
 
 
-_HEADER_REVIEWED = (
-    "sp|P12345|FOO_HUMAN Foo protein OS=Homo sapiens OX=9606 GN=FOO PE=1 SV=2"
-)
-_HEADER_UNREVIEWED = (
-    "tr|Q67890|Q67890_MOUSE Putative bar OS=Mus musculus OX=10090 GN=Bar PE=4 SV=1"
-)
-_HEADER_ISOFORM = (
-    "sp|P12345-2|FOO_HUMAN Isoform 2 OS=Homo sapiens OX=9606 GN=FOO PE=1 SV=2"
-)
+_HEADER_REVIEWED = "sp|P12345|FOO_HUMAN Foo protein OS=Homo sapiens OX=9606 GN=FOO PE=1 SV=2"
+_HEADER_UNREVIEWED = "tr|Q67890|Q67890_MOUSE Putative bar OS=Mus musculus OX=10090 GN=Bar PE=4 SV=1"
+_HEADER_ISOFORM = "sp|P12345-2|FOO_HUMAN Isoform 2 OS=Homo sapiens OX=9606 GN=FOO PE=1 SV=2"
 
 
 class TestParseFastaHeader:
@@ -143,10 +140,7 @@ class TestParseFastaText:
         assert len(records[0].sequence_hash) == 32
 
     def test_two_records(self) -> None:
-        fasta = (
-            f">{_HEADER_REVIEWED}\nMKTAYIAK\n"
-            f">{_HEADER_UNREVIEWED}\nACDEFGHIK\n"
-        )
+        fasta = f">{_HEADER_REVIEWED}\nMKTAYIAK\n>{_HEADER_UNREVIEWED}\nACDEFGHIK\n"
         records = list(parse_fasta_text(fasta))
         assert len(records) == 2
         assert records[0].reviewed is True
@@ -164,9 +158,7 @@ class TestParseFastaText:
         assert records[0].sequence == "MKTAYIAK"
 
     def test_empty_sequence_skipped(self) -> None:
-        fasta = (
-            f">{_HEADER_REVIEWED}\n\n>{_HEADER_UNREVIEWED}\nACDE\n"
-        )
+        fasta = f">{_HEADER_REVIEWED}\n\n>{_HEADER_UNREVIEWED}\nACDE\n"
         records = list(parse_fasta_text(fasta))
         assert len(records) == 1
         assert records[0].accession == "Q67890"
@@ -262,7 +254,8 @@ class TestUniProtRetryClient:
         client = UniProtRetryClient()
         good = MagicMock(status_code=200)
         with patch.object(
-            client.session, "get",
+            client.session,
+            "get",
             side_effect=[_r.ConnectionError("boom"), good],
         ):
             client.get_with_retries("u", self._payload(), lambda *a, **k: None)
@@ -289,10 +282,7 @@ def _capture_emit() -> tuple[object, list[tuple]]:
     return emit, captured
 
 
-_FASTA_TWO = (
-    f">{_HEADER_REVIEWED}\nMKTA\n"
-    f">{_HEADER_UNREVIEWED}\nACDE\n"
-).encode()
+_FASTA_TWO = (f">{_HEADER_REVIEWED}\nMKTA\n>{_HEADER_UNREVIEWED}\nACDE\n").encode()
 
 
 class TestStreamFastaWiring:
@@ -435,8 +425,7 @@ _TSV_ROW_REVIEWED = (
     "350\tACT_SITE 100\t1.1.1.1\tCatalytic role.\tEnzyme;Hydrolase"
 )
 _TSV_ROW_UNREVIEWED = (
-    "Q67890\tunreviewed\tQ67890_MOUSE\tPutative bar\tBar\tMus musculus\t"
-    "210\t\t\t\t"
+    "Q67890\tunreviewed\tQ67890_MOUSE\tPutative bar\tBar\tMus musculus\t210\t\t\t\t"
 )
 
 
@@ -472,9 +461,7 @@ class TestParseFastaLines:
         via_text = list(parse_fasta_text(_FASTA_TWO.decode()))
         via_lines = list(parse_fasta_lines(TextIOWrapper(BytesIO(_FASTA_TWO))))
         assert [r.accession for r in via_text] == [r.accession for r in via_lines]
-        assert [r.sequence_hash for r in via_text] == [
-            r.sequence_hash for r in via_lines
-        ]
+        assert [r.sequence_hash for r in via_text] == [r.sequence_hash for r in via_lines]
 
 
 class TestStreamReleaseFastaWiring:
@@ -548,11 +535,7 @@ class TestStreamReleaseFastaWiring:
             "get",
             return_value=_mock_resp(gzip.compress(_FASTA_TWO)),
         ) as mock_get:
-            list(
-                plugin_instance.stream_release_fasta(
-                    [url], payload=self._payload(), emit=emit
-                )
-            )
+            list(plugin_instance.stream_release_fasta([url], payload=self._payload(), emit=emit))
         assert mock_get.call_count == 1
         assert mock_get.call_args_list[0].args[0] == url
 
@@ -560,9 +543,7 @@ class TestStreamReleaseFastaWiring:
         plugin_instance = UniProtSource()
         emit, captured = _capture_emit()
         body = gzip.compress(_FASTA_TWO)
-        with patch.object(
-            plugin_instance._client.session, "get", return_value=_mock_resp(body)
-        ):
+        with patch.object(plugin_instance._client.session, "get", return_value=_mock_resp(body)):
             list(
                 plugin_instance.stream_release_fasta(
                     ["https://example.com/uniprot_sprot.fasta.gz"],
@@ -587,9 +568,7 @@ class TestStreamReleaseFastaWiring:
         plugin_instance = UniProtSource()
         emit, captured = _capture_emit()
         body = gzip.compress(_FASTA_TWO)
-        with patch.object(
-            plugin_instance._client.session, "get", return_value=_mock_resp(body)
-        ):
+        with patch.object(plugin_instance._client.session, "get", return_value=_mock_resp(body)):
             list(
                 plugin_instance.stream_release_fasta(
                     ["https://example.com/uniprot_sprot.fasta.gz"],
@@ -597,13 +576,9 @@ class TestStreamReleaseFastaWiring:
                     emit=emit,
                 )
             )
-        (done,) = [
-            f for e, f in captured if e == "source.uniprot_release_fasta.file_done"
-        ]
+        (done,) = [f for e, f in captured if e == "source.uniprot_release_fasta.file_done"]
         assert done["md5"] == hashlib.md5(body, usedforsecurity=False).hexdigest()
-        assert done["md5"] != hashlib.md5(
-            _FASTA_TWO, usedforsecurity=False
-        ).hexdigest()
+        assert done["md5"] != hashlib.md5(_FASTA_TWO, usedforsecurity=False).hexdigest()
 
     def test_counts_http_requests_for_the_operation(self) -> None:
         plugin_instance = UniProtSource()
@@ -628,7 +603,6 @@ class TestStreamReleaseFastaWiring:
         assert retries == 0
 
 
-
 class TestTheOneShotFetches:
     """The two calls that let an operation stop opening its own socket.
 
@@ -638,8 +612,9 @@ class TestTheOneShotFetches:
     """
 
     def _knobs(self) -> RetryKnobs:
-        return RetryKnobs(max_retries=2, backoff_base_seconds=0.0,
-                          backoff_max_seconds=0.0, jitter_seconds=0.0)
+        return RetryKnobs(
+            max_retries=2, backoff_base_seconds=0.0, backoff_max_seconds=0.0, jitter_seconds=0.0
+        )
 
     def test_batch_fetch_asks_for_exactly_the_accessions_given(self) -> None:
         p = UniProtSource()
@@ -668,7 +643,8 @@ class TestTheOneShotFetches:
         ):
             p.fetch_accessions_tsv(
                 ["P12345"] * (MAX_ACCESSIONS_PER_REQUEST + 1),
-                fields="accession", emit=emit,
+                fields="accession",
+                emit=emit,
             )
         assert not mock_get.called
 
@@ -682,8 +658,10 @@ class TestTheOneShotFetches:
             p._client.session, "get", return_value=_mock_resp(b"acc\tseq\nP12345\tMKT\n")
         ):
             salida = p.fetch_accessions_tsv(
-                ["P12345", "A0A024QYT6"], fields="accession,sequence",
-                emit=emit, knobs=self._knobs(),
+                ["P12345", "A0A024QYT6"],
+                fields="accession,sequence",
+                emit=emit,
+                knobs=self._knobs(),
             )
         assert "A0A024QYT6" not in salida
         assert salida.count("\n") == 2
@@ -692,11 +670,11 @@ class TestTheOneShotFetches:
         p = UniProtSource()
         emit, _ = _capture_emit()
         with patch.object(
-            p._client.session, "get", return_value=_mock_resp(b'{"results": [{"primaryAccession": "P9WEV8"}]}')
+            p._client.session,
+            "get",
+            return_value=_mock_resp(b'{"results": [{"primaryAccession": "P9WEV8"}]}'),
         ) as mock_get:
-            salida = p.search_secondary_accessions(
-                ["C8VQ65"], emit=emit, knobs=self._knobs()
-            )
+            salida = p.search_secondary_accessions(["C8VQ65"], emit=emit, knobs=self._knobs())
         url = mock_get.call_args_list[0].args[0]
         assert url.startswith(SEARCH_URL)
         assert "sec_acc%3AC8VQ65" in url or "sec_acc:C8VQ65" in url
@@ -719,15 +697,17 @@ class TestTheOneShotFetches:
         # Un 503 del Varnish de UniProt no puede tirar la llamada: el cliente que
         # ya existia reintenta 429 y 5xx, y por eso no hacia falta otro.
         for llamada in (
-            lambda p, e: p.fetch_accessions_tsv(["P12345"], fields="accession", emit=e,
-                                                knobs=self._knobs()),
+            lambda p, e: p.fetch_accessions_tsv(
+                ["P12345"], fields="accession", emit=e, knobs=self._knobs()
+            ),
             lambda p, e: p.search_secondary_accessions(["C8VQ65"], emit=e, knobs=self._knobs()),
         ):
             p = UniProtSource()
             emit, _ = _capture_emit()
             with (
                 patch.object(
-                    p._client.session, "get",
+                    p._client.session,
+                    "get",
                     side_effect=[_mock_resp(b"", status=503), _mock_resp(b'{"results": []}')],
                 ) as mock_get,
                 patch("time.sleep"),
@@ -754,8 +734,7 @@ class TestTheOneShotFetches:
             patch("time.sleep"),
             pytest.raises(RuntimeError, match="503 agotado"),
         ):
-            p.fetch_accessions_tsv(["P12345"], fields="accession", emit=emit,
-                                   knobs=self._knobs())
+            p.fetch_accessions_tsv(["P12345"], fields="accession", emit=emit, knobs=self._knobs())
 
     def test_the_service_limits_are_facts_not_tunables(self) -> None:
         # Medidos contra el servicio: 1001 accesiones responden "Only '1000'
@@ -770,7 +749,6 @@ class TestTheOneShotFetches:
         assert k.backoff_base_seconds > 0 and k.backoff_max_seconds >= k.backoff_base_seconds
 
 
-
 class TestParseMetadataTsv:
     def test_two_rows_yield_two_records(self) -> None:
         text = "\n".join([_TSV_HEADER, _TSV_ROW_REVIEWED, _TSV_ROW_UNREVIEWED])
@@ -782,11 +760,13 @@ class TestParseMetadataTsv:
         assert records[1].raw_fields["Active site"] == ""
 
     def test_empty_entry_row_skipped(self) -> None:
-        text = "\n".join([
-            _TSV_HEADER,
-            "\treviewed\tNAME\t\t\t\t\t\t\t\t",  # blank Entry
-            _TSV_ROW_REVIEWED,
-        ])
+        text = "\n".join(
+            [
+                _TSV_HEADER,
+                "\treviewed\tNAME\t\t\t\t\t\t\t\t",  # blank Entry
+                _TSV_ROW_REVIEWED,
+            ]
+        )
         records = list(parse_metadata_tsv(text))
         assert len(records) == 1
         assert records[0].accession == "P12345"
@@ -851,10 +831,12 @@ class TestStreamMetadataWiring:
             "get",
             return_value=_mock_resp(b""),
         ) as mock_get:
-            list(plugin_instance.stream_metadata(
-                self._payload(fields=["accession", "ft_act_site"], compressed=False),
-                emit=emit,
-            ))
+            list(
+                plugin_instance.stream_metadata(
+                    self._payload(fields=["accession", "ft_act_site"], compressed=False),
+                    emit=emit,
+                )
+            )
         url = mock_get.call_args.args[0]
         assert "format=tsv" in url
         assert "fields=accession" in url
@@ -878,9 +860,7 @@ class TestStreamMetadataWiring:
         emit, _ = _capture_emit()
         body1 = ("\n".join([_TSV_HEADER, _TSV_ROW_REVIEWED]) + "\n").encode()
         body2 = ("\n".join([_TSV_HEADER, _TSV_ROW_UNREVIEWED]) + "\n").encode()
-        page1 = _mock_resp(
-            body1, link_header='<https://example.com?cursor=PAGE2>; rel="next"'
-        )
+        page1 = _mock_resp(body1, link_header='<https://example.com?cursor=PAGE2>; rel="next"')
         page2 = _mock_resp(body2, link_header="")
         with patch.object(
             plugin_instance._client.session,
@@ -908,3 +888,143 @@ class TestStreamMetadataWiring:
         assert "source.uniprot_metadata.start" in events
         assert "source.uniprot_metadata.fetch_page_start" in events
         assert "source.uniprot_metadata.fetch_page_done" in events
+
+
+# -- UniParc, the route for what UniProtKB stopped serving ----------------
+
+#: A real answer, trimmed. The first row is the shape that makes the caller's
+#: job a decision: ONE sequence shared by four accessions, only one of which
+#: was asked for, and three of them carrying a version suffix while the fourth
+#: does not.
+_UNIPARC_HEADER = "Entry\tUniProtKB\tFirst seen\tLast seen\tLength\tSequence"
+_UNIPARC_SHARED = (
+    "UPI0001FE0681\tA0A014NF26.1; E9F541.1; A0A0B4FY72.1; A0A7D5Z9H9\t"
+    "2011-03-01\t2026-09-02\t53\tMKTSLALVLGAAASIVTAGIVITPIKDDQIVPRMGDDCAFGVVTPQGCGPKRN"
+)
+_UNIPARC_SINGLE = "UPI00045646E2\tA0A023GU64.1\t2014-05-07\t2024-07-17\t1059\tMKTSLALVLG"
+
+
+class TestParseUniparcTsv:
+    """The parser hands back every row and decides nothing."""
+
+    def test_a_row_shared_by_four_accessions_keeps_all_four(self) -> None:
+        rows = list(parse_uniparc_tsv(_UNIPARC_HEADER + "\n" + _UNIPARC_SHARED + "\n"))
+        assert len(rows) == 1
+        assert rows[0].accessions == (
+            "A0A014NF26.1",
+            "E9F541.1",
+            "A0A0B4FY72.1",
+            "A0A7D5Z9H9",
+        ), (
+            "identical sequences share a UPI, so a row answers for accessions "
+            "nobody asked about; dropping them here would hide that from the "
+            "caller, who is the one that has to intersect with its own batch"
+        )
+
+    def test_the_version_suffix_is_passed_through_untouched(self) -> None:
+        rows = list(parse_uniparc_tsv(_UNIPARC_HEADER + "\n" + _UNIPARC_SHARED + "\n"))
+        assert "A0A014NF26.1" in rows[0].accessions
+        assert "A0A7D5Z9H9" in rows[0].accessions, (
+            "both forms occur in one cell; normalising them here would be this "
+            "module deciding that the version carries no information"
+        )
+
+    def test_the_dates_survive_because_they_are_how_a_version_is_chosen(self) -> None:
+        rows = list(parse_uniparc_tsv(_UNIPARC_HEADER + "\n" + _UNIPARC_SINGLE + "\n"))
+        assert (rows[0].first_seen, rows[0].last_seen) == ("2014-05-07", "2024-07-17")
+
+    def test_several_rows_for_one_accession_all_come_back(self) -> None:
+        dos = _UNIPARC_HEADER + "\n" + _UNIPARC_SINGLE + "\n" + _UNIPARC_SHARED + "\n"
+        assert len(list(parse_uniparc_tsv(dos))) == 2, (
+            "one accession can answer several rows, one per sequence version; "
+            "picking one is the caller's decision and needs them all"
+        )
+
+    def test_a_row_without_a_sequence_is_skipped(self) -> None:
+        sin = "UPI0000000001\tQ00001.1\t2011-03-01\t2026-09-02\t0\t"
+        rows = list(parse_uniparc_tsv(_UNIPARC_HEADER + "\n" + sin + "\n"))
+        assert rows == [], "a UniParc row with no sequence is the one thing this route is for"
+
+    def test_the_header_drives_the_mapping_so_field_order_is_free(self) -> None:
+        otro = "Sequence\tEntry\tUniProtKB\nMKTS\tUPI0000000002\tQ00002.1\n"
+        rows = list(parse_uniparc_tsv(otro))
+        assert rows[0].upi == "UPI0000000002" and rows[0].sequence == "MKTS"
+        assert rows[0].length is None, "a column the caller did not ask for is absent, not zero"
+
+    def test_header_only_and_empty_text_yield_nothing(self) -> None:
+        assert list(parse_uniparc_tsv(_UNIPARC_HEADER + "\n")) == []
+        assert list(parse_uniparc_tsv("")) == []
+
+
+class TestSearchUniparcTsv:
+    def test_the_cap_fires_before_the_request_not_after(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, _ = _capture_emit()
+        with patch.object(plugin_instance._client.session, "get") as llamada:
+            with pytest.raises(ValueError, match="exceeds UniParc's limit"):
+                plugin_instance.search_uniparc_tsv(
+                    [f"Q{i:05d}" for i in range(MAX_UNIPARC_OR_CONDITIONS + 1)],
+                    fields="upi,accession,sequence",
+                    emit=emit,
+                )
+        assert not llamada.called, (
+            "UniParc answers too many conditions with 200 and an empty body, so "
+            "letting the request through would read as 'none of these exist' and "
+            "record every accession in the batch as unrecoverable"
+        )
+
+    def test_the_cap_is_lower_than_the_uniprotkb_one(self) -> None:
+        assert MAX_UNIPARC_OR_CONDITIONS < MAX_OR_CONDITIONS, (
+            "the two endpoints do not share a limit; reusing MAX_OR_CONDITIONS "
+            "here is the mistake this constant exists to prevent"
+        )
+
+    def test_it_asks_uniparc_and_carries_the_fields(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, _ = _capture_emit()
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            return_value=_mock_resp((_UNIPARC_HEADER + "\n" + _UNIPARC_SINGLE).encode()),
+        ) as llamada:
+            cuerpo = plugin_instance.search_uniparc_tsv(
+                ["A0A023GU64"],
+                fields="upi,accession,first_seen,last_seen,length,sequence",
+                emit=emit,
+            )
+        url = llamada.call_args[0][0]
+        assert url.startswith(UNIPARC_SEARCH_URL)
+        assert "format=tsv" in url
+        assert "first_seen" in url and "sequence" in url
+        assert "A0A023GU64" in url
+        assert "UPI00045646E2" in cuerpo
+
+    def test_the_batch_is_joined_with_or(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, _ = _capture_emit()
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            return_value=_mock_resp(_UNIPARC_HEADER.encode()),
+        ) as llamada:
+            plugin_instance.search_uniparc_tsv(
+                ["Q00001", "Q00002"], fields="upi,sequence", emit=emit
+            )
+        url = llamada.call_args[0][0]
+        assert "Q00001" in url and "Q00002" in url and "OR" in url
+
+    def test_it_announces_the_batch_it_is_about_to_ask_for(self) -> None:
+        plugin_instance = UniProtSource()
+        emit, captured = _capture_emit()
+        with patch.object(
+            plugin_instance._client.session,
+            "get",
+            return_value=_mock_resp(_UNIPARC_HEADER.encode()),
+        ):
+            plugin_instance.search_uniparc_tsv(
+                ["Q00001", "Q00002"], fields="upi,sequence", emit=emit
+            )
+        eventos = [e for e, _ in captured]
+        assert "source.uniparc.search_start" in eventos
+        campos = next(f for e, f in captured if e == "source.uniparc.search_start")
+        assert campos["accessions"] == 2

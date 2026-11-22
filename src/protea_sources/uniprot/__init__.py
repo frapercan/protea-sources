@@ -283,7 +283,10 @@ class AccessionsAnswer:
     ``X-UniProt-Release-Date`` headers of the response (``"2026_04"``,
     ``"04-November-2026"``), passed through as UniProt wrote them. They are
     ``None`` when the response does not carry them, never a guess: a caller that
-    stamps its rows with the release needs to know when it cannot.
+    stamps its rows with the release needs to know when it cannot. A caller that
+    keeps what it fetched needs the release because the knowledge in an entry
+    changes from one release to the next, and a row without it cannot be placed
+    in time.
     """
 
     tsv: str
@@ -543,10 +546,7 @@ class UniProtSource(AnnotationSource):
     ) -> AccessionsAnswer:
         """Fetch one batch of accessions as TSV, with the requested fields and the release.
 
-        The answer names the UniProt release that served it (:class:`AccessionsAnswer`),
-        so a caller that keeps what it fetched can say which release it holds: the
-        knowledge in an entry changes from one release to the next, and a row
-        without its release cannot be placed in time.
+        The answer names the UniProt release that served it (:class:`AccessionsAnswer`).
 
         One request for the whole batch, which is what makes this endpoint the
         fast route: measured 0,2 to 0,9 s per thousand accessions, against a

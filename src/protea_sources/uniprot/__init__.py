@@ -276,6 +276,25 @@ def _build_metadata_url(payload: UniProtMetadataStreamPayload, cursor: str | Non
 
 
 @dataclass(frozen=True)
+class AccessionsAnswer:
+    """One batch of the accessions endpoint, with the UniProt release that answered it.
+
+    ``release`` and ``release_date`` are the ``X-UniProt-Release`` and
+    ``X-UniProt-Release-Date`` headers of the response (``"2026_04"``,
+    ``"04-November-2026"``), passed through as UniProt wrote them. They are
+    ``None`` when the response does not carry them, never a guess: a caller that
+    stamps its rows with the release needs to know when it cannot. A caller that
+    keeps what it fetched needs the release because the knowledge in an entry
+    changes from one release to the next, and a row without it cannot be placed
+    in time.
+    """
+
+    tsv: str
+    release: str | None
+    release_date: str | None
+
+
+@dataclass(frozen=True)
 class UniParcRow:
     """One UniParc entry, as its TSV row carries it.
 
@@ -514,7 +533,20 @@ class UniProtSource(AnnotationSource):
         emit: Any,
         knobs: RetryKnobs | None = None,
     ) -> str:
-        """Fetch one batch of accessions as TSV, with the requested fields.
+        """The TSV of :meth:`fetch_accessions`, for a caller that needs no release."""
+        return self.fetch_accessions(accessions, fields=fields, emit=emit, knobs=knobs).tsv
+
+    def fetch_accessions(
+        self,
+        accessions: Seq[str],
+        *,
+        fields: str,
+        emit: Any,
+        knobs: RetryKnobs | None = None,
+    ) -> AccessionsAnswer:
+        """Fetch one batch of accessions as TSV, with the requested fields and the release.
+
+        The answer names the UniProt release that served it (:class:`AccessionsAnswer`).
 
         One request for the whole batch, which is what makes this endpoint the
         fast route: measured 0,2 to 0,9 s per thousand accessions, against a
@@ -557,7 +589,11 @@ class UniProtSource(AnnotationSource):
             "info",
         )
         resp = self._client.get_with_retries(url, k, emit)
-        return resp.content.decode("utf-8", errors="replace")
+        return AccessionsAnswer(
+            tsv=resp.content.decode("utf-8", errors="replace"),
+            release=resp.headers.get("X-UniProt-Release"),
+            release_date=resp.headers.get("X-UniProt-Release-Date"),
+        )
 
     def search_secondary_accessions(
         self,

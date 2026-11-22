@@ -39,6 +39,7 @@ from protea_sources.uniprot import (
     MAX_UNIPARC_OR_CONDITIONS,
     SEARCH_URL,
     UNIPARC_SEARCH_URL,
+    AccessionsAnswer,
     RetryKnobs,
     UniProtSource,
     parse_fasta_header,
@@ -631,6 +632,36 @@ class TestTheOneShotFetches:
         assert "fields=accession,sequence" in url
         assert "format=tsv" in url
         assert salida == "acc\tseq\nP12345\tMKT\n"
+
+    def test_the_answer_names_the_release_that_served_it(self) -> None:
+        p = UniProtSource()
+        emit, _ = _capture_emit()
+        resp = _mock_resp(b"Entry\tOrganism (ID)\nP69905\t9606\n")
+        resp.headers = {
+            "X-UniProt-Release": "2026_04",
+            "X-UniProt-Release-Date": "04-November-2026",
+        }
+        with patch.object(p._client.session, "get", return_value=resp):
+            answer = p.fetch_accessions(
+                ["P69905"], fields="accession,organism_id", emit=emit, knobs=self._knobs()
+            )
+        assert answer == AccessionsAnswer(
+            tsv="Entry\tOrganism (ID)\nP69905\t9606\n",
+            release="2026_04",
+            release_date="04-November-2026",
+        )
+
+    def test_an_answer_without_release_headers_says_it_does_not_know(self) -> None:
+        # Never a guessed release: a caller that stamps its rows with the release
+        # has to know when it cannot.
+        p = UniProtSource()
+        emit, _ = _capture_emit()
+        with patch.object(p._client.session, "get", return_value=_mock_resp(b"acc\nP12345\n")):
+            answer = p.fetch_accessions(
+                ["P12345"], fields="accession", emit=emit, knobs=self._knobs()
+            )
+        assert (answer.release, answer.release_date) == (None, None)
+        assert answer.tsv == "acc\nP12345\n"
 
     def test_batch_fetch_refuses_more_than_uniprot_allows(self) -> None:
         # Nombrado aqui en vez de dejarlo al 400 de UniProt, para que el mensaje

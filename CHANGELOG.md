@@ -12,6 +12,12 @@ whose version bump drives downstream rebuilds.
 
 ### Added
 
+- `UniProtSource.fetch_accessions` and `AccessionsAnswer`: the accessions endpoint's
+  TSV together with the UniProt release that served it (the `X-UniProt-Release` and
+  `X-UniProt-Release-Date` headers, `None` when a response does not carry them). A
+  caller that keeps what it fetched can stamp each row with its release, since the
+  knowledge in an entry changes from one release to the next.
+  `fetch_accessions_tsv` keeps its signature and returns the answer's TSV.
 - `UniProtSource.fetch_accessions_tsv` and
   `UniProtSource.search_secondary_accessions`: the two one-shot fetches a caller
   needs when it already knows which accessions it wants. Both drive the existing

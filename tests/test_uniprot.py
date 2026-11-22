@@ -21,6 +21,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 from importlib.metadata import entry_points
+from itertools import pairwise
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -36,12 +37,14 @@ from protea_sources.uniprot import (
     ACCESSIONS_URL,
     MAX_ACCESSIONS_PER_REQUEST,
     MAX_OR_CONDITIONS,
+    MAX_REQUEST_TARGET,
     MAX_UNIPARC_OR_CONDITIONS,
     SEARCH_URL,
     UNIPARC_SEARCH_URL,
     AccessionsAnswer,
     RetryKnobs,
     UniProtSource,
+    accession_batches,
     parse_fasta_header,
     parse_fasta_lines,
     parse_fasta_text,
@@ -49,6 +52,7 @@ from protea_sources.uniprot import (
     parse_uniparc_tsv,
     plugin,
 )
+from protea_sources.uniprot._accessions import accessions_url, request_target
 from protea_sources.uniprot._http import UniProtRetryClient, extract_next_cursor
 
 # -- Contract tests -------------------------------------------------------
@@ -664,13 +668,13 @@ class TestTheOneShotFetches:
         assert answer.tsv == "acc\nP12345\n"
 
     def test_batch_fetch_refuses_more_than_uniprot_allows(self) -> None:
-        # Nombrado aqui en vez de dejarlo al 400 de UniProt, para que el mensaje
-        # apunte al troceado del llamante y no al servicio.
+        # Named here rather than left to UniProt's 400, so the message points at
+        # the caller's batching and not at the service.
         p = UniProtSource()
         emit, _ = _capture_emit()
         with (
             patch.object(p._client.session, "get") as mock_get,
-            pytest.raises(ValueError, match="chunk before calling"),
+            pytest.raises(ValueError, match="cut them with accession_batches"),
         ):
             p.fetch_accessions_tsv(
                 ["P12345"] * (MAX_ACCESSIONS_PER_REQUEST + 1),
@@ -768,16 +772,118 @@ class TestTheOneShotFetches:
             p.fetch_accessions_tsv(["P12345"], fields="accession", emit=emit, knobs=self._knobs())
 
     def test_the_service_limits_are_facts_not_tunables(self) -> None:
-        # Medidos contra el servicio: 1001 accesiones responden "Only '1000'
-        # accessions are allowed in each request", y 101 condiciones OR
-        # responden "Maximum allowed is 100".
+        # Measured against the service: 1001 accessions answer "Only '1000'
+        # accessions are allowed in each request", 101 OR conditions answer
+        # "Maximum allowed is 100", and a request target of 8,202 characters
+        # answers 414 where one of 8,191 is answered (2026-11-22).
         assert MAX_ACCESSIONS_PER_REQUEST == 1000
         assert MAX_OR_CONDITIONS == 100
+        assert MAX_REQUEST_TARGET == 8191
 
     def test_knobs_have_defaults_so_a_caller_need_not_care(self) -> None:
         k = RetryKnobs()
         assert k.max_retries >= 1 and k.timeout_seconds > 0
         assert k.backoff_base_seconds > 0 and k.backoff_max_seconds >= k.backoff_base_seconds
+
+
+#: The 26 fields of PROTEA's resolve_protein_metadata, the request that measured
+#: MAX_REQUEST_TARGET: 713 ten-character accessions answered, 714 refused.
+_METADATA_FIELDS = (
+    "accession,reviewed,id,protein_name,gene_names,organism_name,length,absorption,"
+    "ft_act_site,ft_binding,cc_catalytic_activity,cc_cofactor,ft_dna_bind,ec,"
+    "cc_activity_regulation,cc_function,cc_pathway,kinetics,ph_dependence,"
+    "redox_potential,rhea,ft_site,temp_dependence,keyword,feature_count,organism_id"
+)
+
+
+def _trembl_like(n: int) -> list[str]:
+    """Ten-character accessions, the width of most TrEMBL entries."""
+    return [f"A0A{i:07d}" for i in range(n)]
+
+
+def _swissprot_like(n: int) -> list[str]:
+    """Six-character accessions, the width of most Swiss-Prot entries."""
+    return [f"P{i:05d}" for i in range(n)]
+
+
+def _fits_one_request(batch: list[str], fields: str) -> bool:
+    return (
+        len(batch) <= MAX_ACCESSIONS_PER_REQUEST
+        and request_target(accessions_url(batch, fields)) <= MAX_REQUEST_TARGET
+    )
+
+
+class TestAccessionBatches:
+    """The batch endpoint refuses on two limits, so its batches are cut by both.
+
+    A count of 1,000 stood for both until PROTEA asked for 1,000 ten-character
+    TrEMBL accessions with 26 fields: an 11,348-character request target, which
+    UniProt refuses with 414.
+    """
+
+    def test_short_accessions_are_cut_by_count(self) -> None:
+        accessions = _swissprot_like(2500)
+        batches = list(accession_batches(accessions, fields="accession,sequence"))
+        assert [len(b) for b in batches] == [1000, 1000, 500]
+        assert [a for b in batches for a in b] == accessions
+
+    def test_long_accessions_are_cut_by_the_request_target(self) -> None:
+        accessions = _trembl_like(1000)
+        batches = list(accession_batches(accessions, fields=_METADATA_FIELDS))
+        assert [len(b) for b in batches] == [713, 287]
+        assert [a for b in batches for a in b] == accessions
+
+    @pytest.mark.parametrize(
+        ("accessions", "fields"),
+        [
+            (_swissprot_like(2500), "accession"),
+            (_trembl_like(2500), _METADATA_FIELDS),
+            (
+                [
+                    a
+                    for pair in zip(_swissprot_like(2500), _trembl_like(2500), strict=True)
+                    for a in pair
+                ],
+                "accession",
+            ),
+        ],
+        ids=["count-binds", "target-binds", "mixed-widths"],
+    )
+    def test_every_batch_fits_and_is_as_full_as_it_can_be(
+        self, accessions: list[str], fields: str
+    ) -> None:
+        batches = list(accession_batches(accessions, fields=fields))
+        assert [a for b in batches for a in b] == accessions
+        assert all(_fits_one_request(b, fields) for b in batches)
+        for batch, after in pairwise(batches):
+            assert not _fits_one_request([*batch, after[0]], fields)
+
+    def test_no_accessions_make_no_batches(self) -> None:
+        assert list(accession_batches([], fields="accession")) == []
+
+    def test_an_accession_that_cannot_fit_any_request_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="does not fit one request"):
+            list(accession_batches(["P12345"], fields="x" * MAX_REQUEST_TARGET))
+
+    def test_the_fetch_refuses_a_target_uniprot_would_refuse(self) -> None:
+        p = UniProtSource()
+        emit, _ = _capture_emit()
+        with (
+            patch.object(p._client.session, "get") as mock_get,
+            pytest.raises(ValueError, match="cut the accessions with accession_batches"),
+        ):
+            p.fetch_accessions(_trembl_like(1000), fields=_METADATA_FIELDS, emit=emit)
+        assert not mock_get.called
+
+    def test_the_fetch_sends_every_batch_the_batcher_cuts(self) -> None:
+        p = UniProtSource()
+        emit, _ = _capture_emit()
+        with patch.object(p._client.session, "get", return_value=_mock_resp(b"Entry\n")) as get:
+            for batch in accession_batches(_trembl_like(1000), fields=_METADATA_FIELDS):
+                p.fetch_accessions(batch, fields=_METADATA_FIELDS, emit=emit)
+        targets = [request_target(c.args[0]) for c in get.call_args_list]
+        assert len(targets) == 2
+        assert max(targets) <= MAX_REQUEST_TARGET
 
 
 class TestParseMetadataTsv:

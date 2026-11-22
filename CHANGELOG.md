@@ -104,6 +104,16 @@ whose version bump drives downstream rebuilds.
 
 ### Fixed
 
+- The accessions endpoint has a second limit besides its 1,000 accessions: a
+  request target (path and query) of 8,191 characters is answered and one of 8,202
+  is refused with 414 Request-URI Too Long (measured 2026-11-22). A count of 1,000
+  stood for both until 1,000 ten-character TrEMBL accessions with 26 metadata fields
+  made an 11,348-character target. `accession_batches` cuts a list of accessions,
+  in order, into batches that respect both limits (`MAX_REQUEST_TARGET` joins
+  `MAX_ACCESSIONS_PER_REQUEST`), and `fetch_accessions` refuses a batch that breaks
+  either one before sending it, naming `accession_batches` instead of leaving the
+  caller a 414. The endpoint's URL and limits live in `uniprot/_accessions.py` and
+  are re-exported unchanged.
 - CI matrix no longer attempts `poetry install` on Python 3.10 / 3.11,
   which cannot resolve the `>=3.12` dependency set.
 

@@ -27,7 +27,8 @@ The plugin exposes three modality-specific stream methods:
 and two one-shot fetches, for callers that already know which accessions they
 want and need an answer rather than a stream:
 
-* :meth:`UniProtSource.fetch_accessions_tsv` for the batch endpoint.
+* :meth:`UniProtSource.fetch_accessions_tsv` for the batch endpoint, whose
+  batches :func:`accession_batches` cuts to fit both of its limits.
 * :meth:`UniProtSource.search_secondary_accessions` for the ``sec_acc:`` query,
   the only route that resolves secondary accessions.
 
@@ -64,21 +65,27 @@ from protea_contracts import (
     parse_isoform,
 )
 
+from protea_sources.uniprot._accessions import (
+    ACCESSIONS_URL as ACCESSIONS_URL,
+)
+from protea_sources.uniprot._accessions import (
+    MAX_ACCESSIONS_PER_REQUEST as MAX_ACCESSIONS_PER_REQUEST,
+)
+from protea_sources.uniprot._accessions import (
+    MAX_REQUEST_TARGET as MAX_REQUEST_TARGET,
+)
+from protea_sources.uniprot._accessions import (
+    accession_batches as accession_batches,
+)
+from protea_sources.uniprot._accessions import fitting_url
 from protea_sources.uniprot._http import UniProtRetryClient, extract_next_cursor
 
-#: Endpoint that answers a batch of accessions with one request.
-ACCESSIONS_URL = "https://rest.uniprot.org/uniprotkb/accessions"
 #: Search endpoint, the only route that resolves SECONDARY accessions.
 SEARCH_URL = "https://rest.uniprot.org/uniprotkb/search"
 
-#: Hard limit of :data:`ACCESSIONS_URL`. Asking for 1001 answers "Only '1000'
-#: accessions are allowed in each request". Measured against the service, not
-#: assumed. This is a fact about UniProt, not a tunable: it does not belong in a
-#: caller's payload, because a caller cannot choose it.
-MAX_ACCESSIONS_PER_REQUEST = 1000
 #: Cap on OR conditions per search query, stated by UniProt in the body of its
-#: 400: "Too many OR conditions in query. Maximum allowed is 100." Same
-#: reasoning as above.
+#: 400: "Too many OR conditions in query. Maximum allowed is 100." A fact about
+#: UniProt, not a tunable, like :data:`MAX_ACCESSIONS_PER_REQUEST`.
 MAX_OR_CONDITIONS = 100
 
 #: Search endpoint of UniParc, which keeps the sequence of an accession
@@ -566,22 +573,16 @@ class UniProtSource(AnnotationSource):
         answer being shorter than the request is normal and means "gone", not
         "failed".
 
-        :raises ValueError: if the batch exceeds
-            :data:`MAX_ACCESSIONS_PER_REQUEST`. Named here rather than left to
-            UniProt's 400, so the message points at the caller's chunking
-            instead of at the service.
+        :raises ValueError: if the batch breaks either limit of the endpoint, too
+            many accessions or too long a request target; :func:`accession_batches`
+            cuts batches that break neither.
         :raises RuntimeError: on a non-transient status or exhausted retries.
             A batch that failed is never reported as a batch that found nothing:
             an earlier measurement read 0% recoverable merges because ten
             batches had 400'd and the failures were tallied as zeroes.
         """
-        if len(accessions) > MAX_ACCESSIONS_PER_REQUEST:
-            raise ValueError(
-                f"{len(accessions)} accessions exceeds UniProt's limit of "
-                f"{MAX_ACCESSIONS_PER_REQUEST} per request; chunk before calling"
-            )
+        url = fitting_url(accessions, fields)
         k = knobs or RetryKnobs()
-        url = f"{ACCESSIONS_URL}?accessions={','.join(accessions)}&fields={fields}&format=tsv"
         emit(
             "source.uniprot_accessions.fetch_start",
             None,

@@ -21,7 +21,7 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = ">=3.12,<4.0"
-"protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", rev = "f7008c90639c252dfcd674b22c20e8e406a7485d" }
+"protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", rev = "90627e7813b2c6bbe328c64eda52933807e7c315" }
 requests = ">=2.31"
 
 [tool.poetry.group.dev.dependencies]
